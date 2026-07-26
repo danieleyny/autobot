@@ -67,11 +67,12 @@ next available free RSVP. It never retries the same displayed ticket and never
 attempts more than the two expected RSVP options.
 
 POSH may also leave a rejected final RSVP on the order page without recognizable
-sold-out text. If confirmation times out while **Your Order**, **Total Due**, and
-exactly one **Back** control remain visible, the helper treats that unchanged
-order page as a stalled checkout, clicks Back, and tries the other free RSVP
-once. If the page has navigated away or the state is ambiguous, it keeps the
-safer submitted-unconfirmed stop instead.
+sold-out text. If **Your Order**, **Total Due**, and exactly one **Back** control
+remain visible for three seconds after final submission, the helper treats that
+unchanged order page as a stalled checkout, clicks Back, and tries the other
+free RSVP once. Explicit success, duplicate, or sold-out signals are handled
+immediately. If the page has navigated away or the state is ambiguous, it keeps
+the safer submitted-unconfirmed stop instead.
 
 It stops for:
 

@@ -13,6 +13,7 @@
   const ANTI_BOT_PATTERN =
     /captcha|turnstile|cloudflare|verifying you(?:'|’)re not a robot|too many requests|rate limit|temporarily blocked/i;
   const DOM_POLL_MS = 25;
+  const STALLED_ORDER_GRACE_MS = 3_000;
   const GATE_EARLY_MS = 120_000;
   const GATE_LATE_MS = 120_000;
   const GATE_ATTEMPT_OFFSETS_MS = [
@@ -67,7 +68,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.1</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.2</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -350,6 +351,15 @@
     assertEvent(config);
   }
 
+  function stalledOrderPageVisible() {
+    const bodyText = normalize(document.body.innerText);
+    return (
+      /\bYour Order\b/i.test(bodyText) &&
+      /\bTotal Due\b/i.test(bodyText) &&
+      exactButton("Back").length === 1
+    );
+  }
+
   async function retryNextTicket(config, failedTicketName, reason) {
     const excludedTicketNames = [
       ...new Set([...(config.excludedTicketNames || []), failedTicketName])
@@ -515,6 +525,7 @@
     }
     outcome.click();
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
+    const finalSubmittedAt = Date.now();
 
     let finalResult;
     try {
@@ -523,15 +534,16 @@
         if (SUCCESS_PATTERN.test(bodyText)) return "success";
         if (SOLD_OUT_PATTERN.test(bodyText)) return "soldout";
         if (DUPLICATE_PATTERN.test(bodyText)) return "duplicate";
+        if (
+          Date.now() - finalSubmittedAt >= STALLED_ORDER_GRACE_MS &&
+          stalledOrderPageVisible()
+        ) {
+          return "stalled";
+        }
         return null;
       }, 12_000, "reservation confirmation");
     } catch {
-      const stalledText = normalize(document.body.innerText);
-      const stillOnOrderPage =
-        /\bYour Order\b/i.test(stalledText) &&
-        /\bTotal Due\b/i.test(stalledText) &&
-        exactButton("Back").length === 1;
-      if (stillOnOrderPage) {
+      if (stalledOrderPageVisible()) {
         await retryNextTicket(
           config,
           resolvedTicketName,
@@ -545,6 +557,14 @@
       return;
     }
 
+    if (finalResult === "stalled") {
+      await retryNextTicket(
+        config,
+        resolvedTicketName,
+        "The order page remained unchanged for three seconds after final RSVP"
+      );
+      return;
+    }
     if (finalResult === "duplicate") {
       await markCompleted(config, "already-reserved");
       log("POSH reports that this account already has or reached the limit for this event.");
