@@ -1,0 +1,74 @@
+AUTOBOT RSVP LAB v0.5.0 — SCHOOL COMPUTER SETUP
+=================================================
+
+WHAT YOU NEED
+
+- Google Chrome
+- Permission to enable Chrome Developer mode
+- The extracted AUTOBOT-v0.5.0 folder
+
+
+INSTALL — ABOUT 2 MINUTES
+
+1. Save the attached AUTOBOT-v0.5.0.zip file to the school computer.
+
+2. Double-click the ZIP file to extract it.
+   You should now see a folder named AUTOBOT-v0.5.0.
+
+3. Open Google Chrome.
+
+4. Type this into Chrome's address bar and press Enter:
+
+   chrome://extensions
+
+5. Turn on "Developer mode" in the upper-right corner.
+
+6. Click "Load unpacked".
+
+7. Select the extracted AUTOBOT-v0.5.0 folder.
+   Select the folder itself—the one containing manifest.json.
+
+8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
+
+9. Open your POSH event page and refresh it once.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.5.0.
+
+
+BEFORE THE DEMONSTRATION
+
+1. Sign into POSH normally and complete any OTP or Cloudflare check yourself.
+
+2. Open your organizer-owned POSH test event.
+
+3. Confirm the event title and ticket-selection option.
+
+4. Enter the event password and local release time.
+
+5. Leave "Two-minute password retry window" checked.
+
+6. Check "Execute one free RSVP" for the real demonstration.
+   Leave it unchecked only when you want inspection mode with no reservation.
+
+7. Click "Run / Arm" at least two minutes before the release.
+
+8. Keep Chrome open, keep the event tab visible, and keep the computer awake.
+
+
+IMPORTANT
+
+- The extension never includes or transfers your POSH login, OTP, event
+  password, browser session, or previous test locks.
+
+- Authentication, OTP, CAPTCHA/Cloudflare, and payment steps remain manual.
+
+- Use this only with the organizer-owned classroom test event.
+
+- If Chrome does not show Developer mode or Load unpacked, the school has
+  probably disabled unpacked extensions. Ask your professor or school IT to
+  allow this classroom extension. Do not attempt to bypass the restriction.
+
+
+REMOVING IT AFTER THE DEMONSTRATION
+
+Open chrome://extensions and click "Remove" under
+"AUTOBOT Owned-Event RSVP Lab".

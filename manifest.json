@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "AUTOBOT Owned-Event RSVP Lab",
+  "version": "0.5.0",
+  "description": "A one-shot classroom helper for an organizer-owned POSH test event.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://posh.vip/e/*"],
+  "action": {
+    "default_title": "Open AUTOBOT RSVP Lab",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://posh.vip/e/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
