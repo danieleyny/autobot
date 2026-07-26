@@ -7,7 +7,7 @@
   const DUPLICATE_PATTERN =
     /already (?:have|registered|rsvp|reserved)|already going|limit reached|ticket limit|maximum number of tickets/i;
   const SOLD_OUT_PATTERN =
-    /sold out|no longer available|not enough tickets|ticket(?:s)? unavailable|quantity unavailable|inventory changed/i;
+    /sold out|no longer available|not enough tickets|ticket(?:s)? unavailable|quantity unavailable|inventory changed|capacity reached|could not complete (?:the )?reservation|unable to (?:complete|reserve)|failed to reserve/i;
   const LOGIN_PATTERN = /what(?:'|’)s your phone number|login or sign up|verification code|one-time password/i;
   const PAYMENT_PATTERN = /card number|credit card|affirm|payment method|billing address/i;
   const ANTI_BOT_PATTERN =
@@ -67,7 +67,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.1</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -350,15 +350,15 @@
     assertEvent(config);
   }
 
-  async function retryAfterSoldOut(config, soldOutTicketName) {
+  async function retryNextTicket(config, failedTicketName, reason) {
     const excludedTicketNames = [
-      ...new Set([...(config.excludedTicketNames || []), soldOutTicketName])
+      ...new Set([...(config.excludedTicketNames || []), failedTicketName])
     ];
     if (excludedTicketNames.length >= MAX_TICKET_ATTEMPTS) {
       throw new Error("Both free RSVP options were attempted and are unavailable or sold out.");
     }
 
-    log(`${soldOutTicketName} sold out during checkout; returning for the next free RSVP.`);
+    log(`${reason}; returning from ${failedTicketName} for the next free RSVP.`);
     await returnForNextTicket(config);
     await executeReservation({
       ...config,
@@ -495,7 +495,7 @@
       return;
     }
     if (outcome === "soldout") {
-      await retryAfterSoldOut(config, resolvedTicketName);
+      await retryNextTicket(config, resolvedTicketName, "POSH reported that the ticket is unavailable");
       return;
     }
     if (outcome === "login") throw new Error("POSH login is required. Authenticate normally, then re-arm.");
@@ -526,6 +526,20 @@
         return null;
       }, 12_000, "reservation confirmation");
     } catch {
+      const stalledText = normalize(document.body.innerText);
+      const stillOnOrderPage =
+        /\bYour Order\b/i.test(stalledText) &&
+        /\bTotal Due\b/i.test(stalledText) &&
+        exactButton("Back").length === 1;
+      if (stillOnOrderPage) {
+        await retryNextTicket(
+          config,
+          resolvedTicketName,
+          "No confirmation appeared and the order page still has a Back control"
+        );
+        return;
+      }
+
       await markCompleted(config, "submitted-unconfirmed");
       log("Final RSVP was submitted once, but POSH showed no recognized confirmation. Do not retry; verify the ticket in My Orders.");
       return;
@@ -537,7 +551,7 @@
       return;
     }
     if (finalResult === "soldout") {
-      await retryAfterSoldOut(config, resolvedTicketName);
+      await retryNextTicket(config, resolvedTicketName, "POSH reported that the ticket is unavailable");
       return;
     }
 
