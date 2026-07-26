@@ -33,9 +33,10 @@ was closed.
 7. Check it only for the single authorized live test.
 8. Enter an optional local release time and click **Run / Arm**.
 
-For a future password swap, leave **Two-minute password retry window (no
-refresh)** checked. The helper starts at `T-2:00`, attempts every five seconds
-through `T-0:20`, then attempts every second from `T-0:15` through `T+0:10`.
+For a future password swap, leave **Four-minute password retry window (no
+refresh)** checked. The helper starts at `T-2:00`, attempts every three seconds
+outside the dense release window, and attempts every second from `T-0:30`
+through `T+0:30`. Three-second attempts then continue through `T+2:00`.
 Before each submission it clears and re-enters the prepared password because
 Posh clears failed password entries. Attempts never overlap: if Posh has not
 finished the previous response, missed clock targets are skipped. The page does
@@ -60,6 +61,11 @@ order. If the second strategy is selected but only one enabled free RSVP is
 available, the helper uses that sole option. After selection, the helper records
 the actual displayed ticket name for logs and the one-shot completion lock.
 
+If the selected ticket becomes visibly sold out or unavailable during checkout,
+the helper returns to the ticket selector and makes one bounded attempt on the
+next available free RSVP. It never retries the same displayed ticket and never
+attempts more than the two expected RSVP options.
+
 It stops for:
 
 - login or OTP;
@@ -69,7 +75,8 @@ It stops for:
 - a ticket that is not visibly free;
 - missing or duplicate event/ticket matches;
 - unexpected checkout fields;
-- any second attempt from the same armed run.
+- any repeat attempt on the same displayed ticket;
+- more than two ticket attempts from the same armed run.
 
 POSH may render RSVP and checkout actions as native buttons, links, or
 `role="button"` controls depending on the current event layout. The helper

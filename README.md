@@ -14,10 +14,27 @@ free POSH test event.
 7. Select the extracted `autobot-main` folder—the folder containing
    `manifest.json`.
 8. Open the POSH test-event page and refresh it once.
-9. Confirm that the AUTOBOT panel appears and displays **v0.5.0**.
+9. Confirm that the AUTOBOT panel appears and displays **v0.6.0**.
 
 For the demonstration checklist, open
 [START-HERE.txt](START-HERE.txt).
+
+## Updating AUTOBOT
+
+Chrome's **Reload** button reloads the extension files already stored on that
+computer. It does not download updates from GitHub.
+
+When a new version is published:
+
+1. Return to this repository and choose **Code → Download ZIP** again.
+2. Extract the new download.
+3. Open `chrome://extensions`.
+4. Remove the older AUTOBOT extension.
+5. Click **Load unpacked** and select the new `autobot-main` folder.
+6. Confirm the new version number in the AUTOBOT panel.
+
+This replacement method is simplest and avoids accidentally mixing files from
+two versions.
 
 ## Important
 

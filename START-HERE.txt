@@ -1,4 +1,4 @@
-AUTOBOT RSVP LAB v0.5.0 — SCHOOL COMPUTER SETUP
+AUTOBOT RSVP LAB v0.6.0 — SCHOOL COMPUTER SETUP
 =================================================
 
 WHAT YOU NEED
@@ -10,10 +10,10 @@ WHAT YOU NEED
 
 INSTALL — ABOUT 2 MINUTES
 
-1. Save the attached AUTOBOT-v0.5.0.zip file to the school computer.
+1. Download the newest AUTOBOT ZIP from the GitHub repository.
 
 2. Double-click the ZIP file to extract it.
-   You should now see a folder named AUTOBOT-v0.5.0.
+   You should now see an extracted folder such as autobot-main.
 
 3. Open Google Chrome.
 
@@ -25,13 +25,13 @@ INSTALL — ABOUT 2 MINUTES
 
 6. Click "Load unpacked".
 
-7. Select the extracted AUTOBOT-v0.5.0 folder.
+7. Select the extracted autobot-main folder.
    Select the folder itself—the one containing manifest.json.
 
 8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
 
 9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.5.0.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.6.0.
 
 
 BEFORE THE DEMONSTRATION
@@ -44,7 +44,7 @@ BEFORE THE DEMONSTRATION
 
 4. Enter the event password and local release time.
 
-5. Leave "Two-minute password retry window" checked.
+5. Leave "Four-minute password retry window" checked.
 
 6. Check "Execute one free RSVP" for the real demonstration.
    Leave it unchecked only when you want inspection mode with no reservation.

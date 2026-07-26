@@ -6,62 +6,21 @@
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
     /already (?:have|registered|rsvp|reserved)|already going|limit reached|ticket limit|maximum number of tickets/i;
+  const SOLD_OUT_PATTERN =
+    /sold out|no longer available|not enough tickets|ticket(?:s)? unavailable|quantity unavailable|inventory changed/i;
   const LOGIN_PATTERN = /what(?:'|’)s your phone number|login or sign up|verification code|one-time password/i;
   const PAYMENT_PATTERN = /card number|credit card|affirm|payment method|billing address/i;
   const ANTI_BOT_PATTERN =
     /captcha|turnstile|cloudflare|verifying you(?:'|’)re not a robot|too many requests|rate limit|temporarily blocked/i;
   const DOM_POLL_MS = 25;
   const GATE_EARLY_MS = 120_000;
-  const GATE_LATE_MS = 10_000;
+  const GATE_LATE_MS = 120_000;
   const GATE_ATTEMPT_OFFSETS_MS = [
-    -120_000,
-    -115_000,
-    -110_000,
-    -105_000,
-    -100_000,
-    -95_000,
-    -90_000,
-    -85_000,
-    -80_000,
-    -75_000,
-    -70_000,
-    -65_000,
-    -60_000,
-    -55_000,
-    -50_000,
-    -45_000,
-    -40_000,
-    -35_000,
-    -30_000,
-    -25_000,
-    -20_000,
-    -15_000,
-    -14_000,
-    -13_000,
-    -12_000,
-    -11_000,
-    -10_000,
-    -9_000,
-    -8_000,
-    -7_000,
-    -6_000,
-    -5_000,
-    -4_000,
-    -3_000,
-    -2_000,
-    -1_000,
-    0,
-    1_000,
-    2_000,
-    3_000,
-    4_000,
-    5_000,
-    6_000,
-    7_000,
-    8_000,
-    9_000,
-    10_000
+    ...Array.from({ length: 30 }, (_, index) => (-120 + index * 3) * 1000),
+    ...Array.from({ length: 61 }, (_, index) => (-30 + index) * 1000),
+    ...Array.from({ length: 30 }, (_, index) => (33 + index * 3) * 1000)
   ];
+  const MAX_TICKET_ATTEMPTS = 2;
 
   if (document.getElementById(ROOT_ID)) return;
 
@@ -108,7 +67,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.5.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -129,7 +88,7 @@
 
       <label class="check">
         <input id="release-gate" type="checkbox" checked>
-        Two-minute password retry window (no refresh)
+        Four-minute password retry window (no refresh)
       </label>
 
       <label class="check">
@@ -306,7 +265,16 @@
     }
   }
 
+  function visibleTicketDialog() {
+    return [...document.querySelectorAll('[role="dialog"]')].find(visible) || null;
+  }
+
   async function openTicketPicker() {
+    if (visibleTicketDialog()) {
+      log("Ticket selector is already open.");
+      return;
+    }
+
     const buttons = await waitFor(() => {
       const matches = exactButton("RSVP", "Get Tickets");
       return matches.length === 1 ? matches : null;
@@ -316,7 +284,7 @@
     }
     buttons[0].click();
     await waitFor(
-      () => document.querySelector('[role="dialog"]'),
+      () => visibleTicketDialog(),
       8_000,
       "the ticket dialog"
     );
@@ -331,10 +299,19 @@
     });
   }
 
-  function availableFreeTicketCards() {
+  function cardTicketName(card) {
+    return normalize(card.querySelector("h6")?.innerText);
+  }
+
+  function availableFreeTicketCards(excludedTicketNames = []) {
+    const excluded = new Set(
+      excludedTicketNames.map((ticketName) => normalize(ticketName).toLocaleLowerCase())
+    );
     return [...document.querySelectorAll('[data-sentry-component="EventPageTicketItem"]')].filter(
       (card) => {
         if (!visible(card)) return false;
+        const ticketName = cardTicketName(card);
+        if (!ticketName || excluded.has(ticketName.toLocaleLowerCase())) return false;
         const renderedText = normalize(card.innerText);
         const enabledButtons = [...card.querySelectorAll("button")].filter(
           (button) => visible(button) && !button.disabled
@@ -347,6 +324,50 @@
     );
   }
 
+  async function returnForNextTicket(config) {
+    if (visibleTicketDialog()) return;
+
+    const bodyText = normalize(document.body.innerText);
+    const onOrderPage = /\bYour Order\b/i.test(bodyText) || /\bTotal Due\b/i.test(bodyText);
+    if (!onOrderPage && exactButton("RSVP", "Get Tickets").length === 1) return;
+
+    const backControls = exactButton("Back", "Change Tickets", "Edit Order", "Try Again");
+    if (backControls.length === 1) {
+      backControls[0].click();
+    } else if (history.length > 1) {
+      history.back();
+    } else {
+      throw new Error("A ticket sold out, but no safe return control was available.");
+    }
+
+    await waitFor(
+      () =>
+        visibleTicketDialog() ||
+        exactButton("RSVP", "Get Tickets").length === 1,
+      8_000,
+      "the ticket selector or event RSVP control"
+    );
+    assertEvent(config);
+  }
+
+  async function retryAfterSoldOut(config, soldOutTicketName) {
+    const excludedTicketNames = [
+      ...new Set([...(config.excludedTicketNames || []), soldOutTicketName])
+    ];
+    if (excludedTicketNames.length >= MAX_TICKET_ATTEMPTS) {
+      throw new Error("Both free RSVP options were attempted and are unavailable or sold out.");
+    }
+
+    log(`${soldOutTicketName} sold out during checkout; returning for the next free RSVP.`);
+    await returnForNextTicket(config);
+    await executeReservation({
+      ...config,
+      ticketStrategy: "any",
+      ticketName: "",
+      excludedTicketNames
+    });
+  }
+
   async function executeReservation(config) {
     if (stopped) return;
     assertEvent(config);
@@ -355,7 +376,7 @@
     let selectionMessage = "";
     const cards = await waitFor(
       () => {
-        const available = availableFreeTicketCards();
+        const available = availableFreeTicketCards(config.excludedTicketNames || []);
         if (config.ticketStrategy === "any" && available.length >= 1) {
           selectionMessage = "Selected the first currently available free RSVP.";
           return [available[0]];
@@ -427,8 +448,17 @@
     }
 
     const state = await loadState();
-    if (state?.attempted) throw new Error("Safety stop: this armed run already attempted a reservation.");
-    await saveState({ ...state, attempted: true });
+    const attemptedTicketNames = state?.attemptedTicketNames || [];
+    if (attemptedTicketNames.some((ticketName) => sameText(ticketName, resolvedTicketName))) {
+      throw new Error(`Safety stop: this run already attempted ${resolvedTicketName}.`);
+    }
+    if (attemptedTicketNames.length >= MAX_TICKET_ATTEMPTS) {
+      throw new Error("Safety stop: this run already attempted both RSVP options.");
+    }
+    await saveState({
+      ...state,
+      attemptedTicketNames: [...attemptedTicketNames, resolvedTicketName]
+    });
 
     addButtons[0].click();
     await waitFor(
@@ -445,6 +475,7 @@
     const outcome = await waitFor(() => {
       const bodyText = normalize(document.body.innerText);
       if (SUCCESS_PATTERN.test(bodyText)) return "success";
+      if (SOLD_OUT_PATTERN.test(bodyText)) return "soldout";
       if (LOGIN_PATTERN.test(bodyText)) return "login";
       if (PAYMENT_PATTERN.test(bodyText)) return "payment";
       const final = exactButton("Complete RSVP", "Confirm RSVP", "Reserve");
@@ -461,6 +492,10 @@
     if (outcome === "success") {
       log("Reservation confirmed.");
       await markCompleted(config, "confirmed");
+      return;
+    }
+    if (outcome === "soldout") {
+      await retryAfterSoldOut(config, resolvedTicketName);
       return;
     }
     if (outcome === "login") throw new Error("POSH login is required. Authenticate normally, then re-arm.");
@@ -481,26 +516,33 @@
     outcome.click();
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
 
+    let finalResult;
     try {
-      const finalResult = await waitFor(() => {
+      finalResult = await waitFor(() => {
         const bodyText = normalize(document.body.innerText);
         if (SUCCESS_PATTERN.test(bodyText)) return "success";
+        if (SOLD_OUT_PATTERN.test(bodyText)) return "soldout";
         if (DUPLICATE_PATTERN.test(bodyText)) return "duplicate";
         return null;
       }, 12_000, "reservation confirmation");
-
-      if (finalResult === "duplicate") {
-        await markCompleted(config, "already-reserved");
-        log("POSH reports that this account already has or reached the limit for this event.");
-        return;
-      }
-
-      await markCompleted(config, "confirmed");
-      log("Reservation confirmed.");
     } catch {
       await markCompleted(config, "submitted-unconfirmed");
       log("Final RSVP was submitted once, but POSH showed no recognized confirmation. Do not retry; verify the ticket in My Orders.");
+      return;
     }
+
+    if (finalResult === "duplicate") {
+      await markCompleted(config, "already-reserved");
+      log("POSH reports that this account already has or reached the limit for this event.");
+      return;
+    }
+    if (finalResult === "soldout") {
+      await retryAfterSoldOut(config, resolvedTicketName);
+      return;
+    }
+
+    await markCompleted(config, "confirmed");
+    log("Reservation confirmed.");
   }
 
   function configFromPanel() {
@@ -519,7 +561,8 @@
       releaseConfigured: Boolean(releaseValue),
       retryGate: $("#release-gate").checked,
       execute: $("#execute").checked,
-      attempted: false,
+      attemptedTicketNames: [],
+      excludedTicketNames: [],
       armed: true
     };
   }
@@ -595,11 +638,11 @@
       await waitUntil(startAt);
     }
     if (Date.now() > stopAt) {
-      throw new Error("The password retry window ended more than 10 seconds ago.");
+      throw new Error("The password retry window ended more than two minutes ago.");
     }
 
     let attempts = 0;
-    log("Release-gate window started. Using 47 fixed clock targets with no refresh.");
+    log(`Release-gate window started. Using up to ${GATE_ATTEMPT_OFFSETS_MS.length} fixed clock targets with no refresh.`);
     for (const offset of GATE_ATTEMPT_OFFSETS_MS) {
       const scheduledAt = config.releaseAt + offset;
       if (scheduledAt < Date.now()) continue;
