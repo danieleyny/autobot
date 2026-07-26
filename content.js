@@ -68,7 +68,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.3</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.4</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -340,6 +340,29 @@
     );
   }
 
+  function visibleSoldOutEvidence() {
+    const matches = [...document.querySelectorAll("body *")].filter(
+      (element) =>
+        visible(element) &&
+        SOLD_OUT_PATTERN.test(normalize(element.innerText || element.textContent))
+    );
+    const innermostMatches = matches.filter(
+      (element) =>
+        !matches.some((other) => other !== element && element.contains(other))
+    );
+    return new Set(
+      innermostMatches.map((element) =>
+        normalize(element.innerText || element.textContent).toLocaleLowerCase()
+      )
+    );
+  }
+
+  function hasNewSoldOutEvidence(existingEvidence) {
+    return [...visibleSoldOutEvidence()].some(
+      (message) => !existingEvidence.has(message)
+    );
+  }
+
   async function returnForNextTicket(config) {
     if (visibleTicketDialog()) return;
 
@@ -553,13 +576,14 @@
 
     const checkout = exactButton("Checkout");
     if (checkout.length !== 1) throw new Error(`Expected one Checkout button, found ${checkout.length}.`);
+    const soldOutBeforeCheckout = visibleSoldOutEvidence();
     checkout[0].click();
     log("One ticket selected; checkout requested.");
 
     const outcome = await waitFor(() => {
       const bodyText = normalize(document.body.innerText);
       if (SUCCESS_PATTERN.test(bodyText)) return "success";
-      if (SOLD_OUT_PATTERN.test(bodyText)) return "soldout";
+      if (hasNewSoldOutEvidence(soldOutBeforeCheckout)) return "soldout";
       if (LOGIN_PATTERN.test(bodyText)) return "login";
       if (PAYMENT_PATTERN.test(bodyText)) return "payment";
       const final = exactButton("Complete RSVP", "Confirm RSVP", "Reserve");
@@ -597,6 +621,7 @@
     ) {
       throw new Error("Safety stop: the final RSVP button is not inside a verified free-order state.");
     }
+    const soldOutBeforeFinalSubmit = visibleSoldOutEvidence();
     outcome.click();
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
     const finalSubmittedAt = Date.now();
@@ -606,7 +631,7 @@
       finalResult = await waitFor(() => {
         const bodyText = normalize(document.body.innerText);
         if (SUCCESS_PATTERN.test(bodyText)) return "success";
-        if (SOLD_OUT_PATTERN.test(bodyText)) return "soldout";
+        if (hasNewSoldOutEvidence(soldOutBeforeFinalSubmit)) return "soldout";
         if (DUPLICATE_PATTERN.test(bodyText)) return "duplicate";
         if (
           Date.now() - finalSubmittedAt >= STALLED_ORDER_GRACE_MS &&

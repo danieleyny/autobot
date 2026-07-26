@@ -1,4 +1,4 @@
-AUTOBOT RSVP LAB v0.6.3 — SCHOOL COMPUTER SETUP
+AUTOBOT RSVP LAB v0.6.4 — SCHOOL COMPUTER SETUP
 =================================================
 
 WHAT YOU NEED
@@ -31,7 +31,7 @@ INSTALL — ABOUT 2 MINUTES
 8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
 
 9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.6.3.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.6.4.
 
 
 BEFORE THE DEMONSTRATION
