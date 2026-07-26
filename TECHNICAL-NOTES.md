@@ -66,6 +66,11 @@ the helper returns to the ticket selector and makes one bounded attempt on the
 next available free RSVP. It never retries the same displayed ticket and never
 attempts more than the two expected RSVP options.
 
+POSH's current failure toast uses wording such as **out of stock**. The helper
+recognizes that wording immediately. After returning to the selector, it removes
+the failed ticket's retained quantity before adding the alternative, preventing
+the second checkout from accidentally containing both RSVP options.
+
 POSH may also leave a rejected final RSVP on the order page without recognizable
 sold-out text. If **Your Order**, **Total Due**, and exactly one **Back** control
 remain visible for three seconds after final submission, the helper treats that

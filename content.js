@@ -7,7 +7,7 @@
   const DUPLICATE_PATTERN =
     /already (?:have|registered|rsvp|reserved)|already going|limit reached|ticket limit|maximum number of tickets/i;
   const SOLD_OUT_PATTERN =
-    /sold out|no longer available|not enough tickets|ticket(?:s)? unavailable|quantity unavailable|inventory changed|capacity reached|could not complete (?:the )?reservation|unable to (?:complete|reserve)|failed to reserve/i;
+    /sold out|out of stock|no longer available|not enough tickets|ticket(?:s)? unavailable|quantity unavailable|inventory changed|capacity reached|could not complete (?:the )?reservation|unable to (?:complete|reserve)|failed to reserve/i;
   const LOGIN_PATTERN = /what(?:'|’)s your phone number|login or sign up|verification code|one-time password/i;
   const PAYMENT_PATTERN = /card number|credit card|affirm|payment method|billing address/i;
   const ANTI_BOT_PATTERN =
@@ -68,7 +68,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.2</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.3</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -170,6 +170,21 @@
       (element) =>
         !matches.some((other) => other !== element && element.contains(other))
     );
+  }
+
+  function exactVisibleAction(label) {
+    const semanticMatches = exactButton(label);
+    if (semanticMatches.length === 1) return semanticMatches[0];
+    if (semanticMatches.length > 1) return null;
+
+    const textMatches = [...document.querySelectorAll("body *")].filter(
+      (element) => visible(element) && sameText(element.textContent, label)
+    );
+    const innermostMatches = textMatches.filter(
+      (element) =>
+        !textMatches.some((other) => other !== element && element.contains(other))
+    );
+    return innermostMatches.length === 1 ? innermostMatches[0] : null;
   }
 
   async function waitFor(read, timeoutMs, description) {
@@ -332,9 +347,13 @@
     const onOrderPage = /\bYour Order\b/i.test(bodyText) || /\bTotal Due\b/i.test(bodyText);
     if (!onOrderPage && exactButton("RSVP", "Get Tickets").length === 1) return;
 
-    const backControls = exactButton("Back", "Change Tickets", "Edit Order", "Try Again");
-    if (backControls.length === 1) {
-      backControls[0].click();
+    const backControl =
+      exactVisibleAction("Back") ||
+      exactVisibleAction("Change Tickets") ||
+      exactVisibleAction("Edit Order") ||
+      exactVisibleAction("Try Again");
+    if (backControl) {
+      backControl.click();
     } else if (history.length > 1) {
       history.back();
     } else {
@@ -356,8 +375,61 @@
     return (
       /\bYour Order\b/i.test(bodyText) &&
       /\bTotal Due\b/i.test(bodyText) &&
-      exactButton("Back").length === 1
+      Boolean(exactVisibleAction("Back"))
     );
+  }
+
+  async function clearFailedTicketSelection(failedTicketName) {
+    const card = await waitFor(() => {
+      const matches = findTicketCard(failedTicketName);
+      if (matches.length === 1) return matches[0];
+      if (matches.length === 0) return "removed";
+      return null;
+    }, 5_000, `the previously selected ticket "${failedTicketName}"`);
+
+    if (card === "removed") {
+      log(`${failedTicketName} is no longer in the selector; no quantity removal was needed.`);
+      return;
+    }
+
+    const visibleButtons = [...card.querySelectorAll("button")].filter(visible);
+    const labeledRemoveButtons = visibleButtons.filter((button) =>
+      /remove|decrease|decrement|minus/i.test(
+        `${button.getAttribute("aria-label") || ""} ${button.getAttribute("title") || ""}`
+      )
+    );
+    const cardText = normalize(card.innerText);
+    const showsSelectedQuantity = /(?:^|\s)1(?:\s|$)/.test(cardText);
+
+    let removeButton = null;
+    if (labeledRemoveButtons.length === 1) {
+      removeButton = labeledRemoveButtons[0];
+    } else if (visibleButtons.length === 2) {
+      removeButton = visibleButtons[0];
+    } else if (visibleButtons.length === 1 && showsSelectedQuantity) {
+      removeButton = visibleButtons[0];
+    } else if (visibleButtons.length === 1 && !showsSelectedQuantity) {
+      log(`${failedTicketName} was already removed from the order.`);
+      return;
+    }
+
+    if (!removeButton) {
+      throw new Error(`Could not uniquely identify the quantity-removal control for ${failedTicketName}.`);
+    }
+
+    removeButton.click();
+    await waitFor(() => {
+      const matches = findTicketCard(failedTicketName);
+      if (matches.length === 0) return true;
+      if (matches.length !== 1) return false;
+      const remainingButtons = [...matches[0].querySelectorAll("button")].filter(visible);
+      const remainingText = normalize(matches[0].innerText);
+      return (
+        remainingButtons.length <= 1 &&
+        !/(?:^|\s)1(?:\s|$)/.test(remainingText)
+      );
+    }, 4_000, `removal of ${failedTicketName} from the order`);
+    log(`Removed ${failedTicketName} from the order before trying the alternative.`);
   }
 
   async function retryNextTicket(config, failedTicketName, reason) {
@@ -370,6 +442,8 @@
 
     log(`${reason}; returning from ${failedTicketName} for the next free RSVP.`);
     await returnForNextTicket(config);
+    await openTicketPicker();
+    await clearFailedTicketSelection(failedTicketName);
     await executeReservation({
       ...config,
       ticketStrategy: "any",
