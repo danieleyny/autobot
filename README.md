@@ -14,11 +14,12 @@ free POSH test event.
 7. Select the extracted `autobot-main` folder—the folder containing
    `manifest.json`.
 8. Open the POSH test-event page and refresh it once.
-9. Confirm that the AUTOBOT panel appears and displays **v0.6.4**.
+9. Confirm that the AUTOBOT panel appears and displays **v0.6.5**.
 
-Version 0.6.4 fixes the two-ticket fallback when POSH keeps the first ticket's
-out-of-stock notification visible. The old notification is ignored while a new
-failure message for the alternative is still detected.
+Version 0.6.5 fixes the two-ticket fallback when POSH uses the same dialog
+container for the ticket selector and the order screen. AUTOBOT now clicks
+**Back** from the failed order and waits for visible ticket cards before
+selecting the alternative. It also retains the v0.6.4 stale-notification fix.
 
 For the demonstration checklist, open
 [START-HERE.txt](START-HERE.txt).

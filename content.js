@@ -68,7 +68,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.4</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.5</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -282,7 +282,15 @@
   }
 
   function visibleTicketDialog() {
-    return [...document.querySelectorAll('[role="dialog"]')].find(visible) || null;
+    return (
+      [...document.querySelectorAll('[role="dialog"]')].find(
+        (dialog) =>
+          visible(dialog) &&
+          [...dialog.querySelectorAll('[data-sentry-component="EventPageTicketItem"]')].some(
+            visible
+          )
+      ) || null
+    );
   }
 
   async function openTicketPicker() {
