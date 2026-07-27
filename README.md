@@ -14,12 +14,13 @@ free POSH test event.
 7. Select the extracted `autobot-main` folder—the folder containing
    `manifest.json`.
 8. Open the POSH test-event page and refresh it once.
-9. Confirm that the AUTOBOT panel appears and displays **v0.6.5**.
+9. Confirm that the AUTOBOT panel appears and displays **v0.6.6**.
 
-Version 0.6.5 fixes the two-ticket fallback when POSH uses the same dialog
-container for the ticket selector and the order screen. AUTOBOT now clicks
-**Back** from the failed order and waits for visible ticket cards before
-selecting the alternative. It also retains the v0.6.4 stale-notification fix.
+Version 0.6.6 waits for the failed cart and its old Checkout control to clear
+before adding the alternative. It then verifies that **Your Order** names the
+new ticket before final submission, preventing POSH's stale first-ticket
+Checkout handler from being reused. It retains the earlier shared-dialog and
+stale-notification fixes.
 
 For the demonstration checklist, open
 [START-HERE.txt](START-HERE.txt).

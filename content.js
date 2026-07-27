@@ -68,7 +68,7 @@
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.5</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.6.6</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -360,15 +360,28 @@
     );
     return new Set(
       innermostMatches.map((element) =>
-        normalize(element.innerText || element.textContent).toLocaleLowerCase()
+        normalize(element.innerText || element.textContent)
+          .replace(/\[[a-z0-9-]+\]/gi, "")
+          .toLocaleLowerCase()
       )
     );
   }
 
-  function hasNewSoldOutEvidence(existingEvidence) {
-    return [...visibleSoldOutEvidence()].some(
-      (message) => !existingEvidence.has(message)
-    );
+  function rememberVisibleSoldOutEvidence(config) {
+    const seen = new Set(config.seenSoldOutEvidence || []);
+    for (const message of visibleSoldOutEvidence()) seen.add(message);
+    config.seenSoldOutEvidence = [...seen];
+  }
+
+  function hasNewSoldOutEvidence(config) {
+    const seen = new Set(config.seenSoldOutEvidence || []);
+    const currentEvidence = visibleSoldOutEvidence();
+    const hasNewEvidence = [...currentEvidence].some((message) => !seen.has(message));
+    if (hasNewEvidence) {
+      for (const message of currentEvidence) seen.add(message);
+      config.seenSoldOutEvidence = [...seen];
+    }
+    return hasNewEvidence;
   }
 
   async function returnForNextTicket(config) {
@@ -410,6 +423,31 @@
     );
   }
 
+  function visibleOrderDialog() {
+    return (
+      [...document.querySelectorAll('[role="dialog"]')].find((dialog) => {
+        if (!visible(dialog)) return false;
+        const dialogText = normalize(dialog.innerText);
+        return /\bYour Order\b/i.test(dialogText) && /\bTotal Due\b/i.test(dialogText);
+      }) || null
+    );
+  }
+
+  function orderDialogContainsTicket(orderDialog, ticketName) {
+    return normalize(orderDialog?.innerText)
+      .toLocaleLowerCase()
+      .includes(normalize(ticketName).toLocaleLowerCase());
+  }
+
+  async function waitForEmptyTicketOrder() {
+    await waitFor(
+      () => exactButton("Checkout").length === 0,
+      4_000,
+      "the previous ticket's Checkout control to disappear"
+    );
+    log("The empty ticket order is settled; the previous Checkout control is gone.");
+  }
+
   async function clearFailedTicketSelection(failedTicketName) {
     const card = await waitFor(() => {
       const matches = findTicketCard(failedTicketName);
@@ -419,6 +457,7 @@
     }, 5_000, `the previously selected ticket "${failedTicketName}"`);
 
     if (card === "removed") {
+      await waitForEmptyTicketOrder();
       log(`${failedTicketName} is no longer in the selector; no quantity removal was needed.`);
       return;
     }
@@ -440,6 +479,7 @@
     } else if (visibleButtons.length === 1 && showsSelectedQuantity) {
       removeButton = visibleButtons[0];
     } else if (visibleButtons.length === 1 && !showsSelectedQuantity) {
+      await waitForEmptyTicketOrder();
       log(`${failedTicketName} was already removed from the order.`);
       return;
     }
@@ -460,6 +500,7 @@
         !/(?:^|\s)1(?:\s|$)/.test(remainingText)
       );
     }, 4_000, `removal of ${failedTicketName} from the order`);
+    await waitForEmptyTicketOrder();
     log(`Removed ${failedTicketName} from the order before trying the alternative.`);
   }
 
@@ -576,6 +617,13 @@
     });
 
     addButtons[0].click();
+    await waitFor(() => {
+      const selectedCards = findTicketCard(resolvedTicketName);
+      if (selectedCards.length !== 1) return false;
+      const selectedCard = selectedCards[0];
+      const selectedButtons = [...selectedCard.querySelectorAll("button")].filter(visible);
+      return selectedButtons.length >= 2;
+    }, 5_000, `selected quantity for ${resolvedTicketName}`);
     await waitFor(
       () => exactButton("Checkout").length === 1,
       5_000,
@@ -584,23 +632,25 @@
 
     const checkout = exactButton("Checkout");
     if (checkout.length !== 1) throw new Error(`Expected one Checkout button, found ${checkout.length}.`);
-    const soldOutBeforeCheckout = visibleSoldOutEvidence();
+    rememberVisibleSoldOutEvidence(config);
     checkout[0].click();
     log("One ticket selected; checkout requested.");
 
     const outcome = await waitFor(() => {
       const bodyText = normalize(document.body.innerText);
       if (SUCCESS_PATTERN.test(bodyText)) return "success";
-      if (hasNewSoldOutEvidence(soldOutBeforeCheckout)) return "soldout";
+      if (hasNewSoldOutEvidence(config)) return "soldout";
       if (LOGIN_PATTERN.test(bodyText)) return "login";
       if (PAYMENT_PATTERN.test(bodyText)) return "payment";
       const final = exactButton("Complete RSVP", "Confirm RSVP", "Reserve");
-      if (final.length === 1) return final[0];
+      const orderDialog = visibleOrderDialog();
+      const orderMatchesTicket = orderDialogContainsTicket(orderDialog, resolvedTicketName);
+      if (final.length === 1 && orderMatchesTicket) return final[0];
       const finalRsvp = exactButton("RSVP");
       const hasOrderSummary =
-        /\bYour Order\b/i.test(bodyText) &&
-        /\bTotal Due\b/i.test(bodyText) &&
-        /\bFree\b/i.test(bodyText);
+        orderDialog &&
+        /\bFree\b/i.test(normalize(orderDialog.innerText)) &&
+        orderMatchesTicket;
       if (hasOrderSummary && finalRsvp.length === 1) return finalRsvp[0];
       return null;
     }, 12_000, "checkout result");
@@ -629,7 +679,8 @@
     ) {
       throw new Error("Safety stop: the final RSVP button is not inside a verified free-order state.");
     }
-    const soldOutBeforeFinalSubmit = visibleSoldOutEvidence();
+    log(`Verified final order summary: ${resolvedTicketName}.`);
+    rememberVisibleSoldOutEvidence(config);
     outcome.click();
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
     const finalSubmittedAt = Date.now();
@@ -639,7 +690,7 @@
       finalResult = await waitFor(() => {
         const bodyText = normalize(document.body.innerText);
         if (SUCCESS_PATTERN.test(bodyText)) return "success";
-        if (hasNewSoldOutEvidence(soldOutBeforeFinalSubmit)) return "soldout";
+        if (hasNewSoldOutEvidence(config)) return "soldout";
         if (DUPLICATE_PATTERN.test(bodyText)) return "duplicate";
         if (
           Date.now() - finalSubmittedAt >= STALLED_ORDER_GRACE_MS &&
@@ -704,6 +755,7 @@
       execute: $("#execute").checked,
       attemptedTicketNames: [],
       excludedTicketNames: [],
+      seenSoldOutEvidence: [],
       armed: true
     };
   }
