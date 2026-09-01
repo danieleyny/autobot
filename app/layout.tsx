@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"),
+  metadataBase: new URL("https://autobot-command-center.avgschnook.chatgpt.site"),
   title: "AUTOBOT Command Center",
   description: "Optional multi-device orchestration for the AUTOBOT owned-event RSVP lab.",
   openGraph: {
