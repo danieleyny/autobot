@@ -1,9 +1,9 @@
-import { requireChatGPTUser } from "./chatgpt-auth";
 import { CommandCenter } from "./command-center";
+import { requirePinSession } from "./pin-auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const user = await requireChatGPTUser("/");
-  return <CommandCenter operatorName={user.displayName} />;
+  await requirePinSession();
+  return <CommandCenter operatorName="PIN access" />;
 }

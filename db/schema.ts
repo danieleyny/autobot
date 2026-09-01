@@ -125,3 +125,15 @@ export const auditEvents = sqliteTable(
   },
   (table) => [index("idx_audit_owner_created").on(table.ownerId, table.createdAt)],
 );
+
+export const pinLoginAttempts = sqliteTable(
+  "pin_login_attempts",
+  {
+    clientHash: text("client_hash").primaryKey(),
+    failures: integer("failures").notNull().default(0),
+    windowStartedAt: integer("window_started_at").notNull(),
+    blockedUntil: integer("blocked_until"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [index("idx_pin_attempts_updated").on(table.updatedAt)],
+);

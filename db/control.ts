@@ -85,6 +85,14 @@ const schemaStatements = [
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_audit_owner_created ON audit_events(owner_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS pin_login_attempts (
+    client_hash TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL DEFAULT 0,
+    window_started_at INTEGER NOT NULL,
+    blocked_until INTEGER,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pin_attempts_updated ON pin_login_attempts(updated_at)`,
 ];
 
 export async function ensureControlSchema(): Promise<void> {

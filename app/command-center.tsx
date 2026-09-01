@@ -82,6 +82,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/control", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      return;
+    }
     if (!response.ok) throw new Error("The controller state could not be loaded.");
     const next = (await response.json()) as ControlState;
     setClockOffsetMs(Date.now() - next.serverTime);
@@ -118,6 +122,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      throw new Error("Your dashboard session expired.");
+    }
     const result = (await response.json()) as { error?: string; [key: string]: unknown };
     if (!response.ok) throw new Error(result.error || "The controller rejected the request.");
     return result;
@@ -217,7 +225,12 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           <div className="flex items-center gap-3 text-xs">
             <span className="hidden text-[#aab4a9] sm:block">{relativeClock}</span>
             <span className="h-2.5 w-2.5 rounded-full bg-[#b8ff5a] shadow-[0_0_0_4px_rgb(184_255_90/12%)]" />
-            <span className="max-w-40 truncate rounded-full border border-[#475149] px-3 py-1.5 font-semibold">{operatorName}</span>
+            <span className="hidden max-w-40 truncate rounded-full border border-[#475149] px-3 py-1.5 font-semibold sm:block">{operatorName}</span>
+            <form action="/api/auth/logout" method="post">
+              <button className="rounded-full border border-[#475149] px-3 py-1.5 font-semibold text-[#dce3dc] transition hover:border-[#718074] hover:text-white" type="submit">
+                Lock
+              </button>
+            </form>
           </div>
         </div>
       </header>

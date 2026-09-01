@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getChatGPTUser } from "../../chatgpt-auth";
+import { cookies } from "next/headers";
 import { audit, ensureControlSchema, nowMs, parseJson, randomPairingCode, sha256 } from "../../../db/control";
 import { getD1 } from "../../../db";
+import {
+  CONTROLLER_OWNER_ID,
+  isSameOriginRequest,
+  isValidPinSession,
+  PIN_SESSION_COOKIE,
+} from "../../pin-auth";
 
 type DeviceRow = {
   id: string;
@@ -33,8 +39,10 @@ function jsonError(message: string, status = 400) {
 }
 
 async function operator() {
-  const user = await getChatGPTUser();
-  return user?.userId ? user : null;
+  const store = await cookies();
+  return (await isValidPinSession(store.get(PIN_SESSION_COOKIE)?.value))
+    ? { displayName: "PIN access", email: "", userId: CONTROLLER_OWNER_ID }
+    : null;
 }
 
 function nonEmpty(value: unknown, label: string): string {
@@ -80,7 +88,7 @@ async function queueCommand(input: {
 
 export async function GET() {
   const user = await operator();
-  if (!user) return jsonError("Sign in is required.", 401);
+  if (!user) return jsonError("A valid dashboard PIN session is required.", 401);
   await ensureControlSchema();
   const db = getD1();
   const [deviceResult, runResult, auditResult, leaseResult] = await db.batch([
@@ -145,8 +153,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  if (!isSameOriginRequest(request)) return jsonError("The request origin is not allowed.", 403);
   const user = await operator();
-  if (!user) return jsonError("Sign in is required.", 401);
+  if (!user) return jsonError("A valid dashboard PIN session is required.", 401);
   await ensureControlSchema();
 
   let body: Record<string, unknown>;
