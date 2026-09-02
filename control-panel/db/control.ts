@@ -73,7 +73,8 @@ const schemaStatements = [
     activated_at INTEGER,
     completed_at INTEGER
   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_run ON leases(run_id)`,
+  `DROP INDEX IF EXISTS idx_leases_run`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_run_device ON leases(run_id, device_id)`,
   `CREATE INDEX IF NOT EXISTS idx_leases_device_status ON leases(device_id, status)`,
   `CREATE TABLE IF NOT EXISTS audit_events (
     id TEXT PRIMARY KEY,

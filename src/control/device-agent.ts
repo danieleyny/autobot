@@ -50,7 +50,7 @@ async function heartbeat() {
     const extensionConnected = Date.now() - extensionSeenAt < 4_000;
     const result = await controllerRequest({
       action: "poll",
-      version: "0.8.0",
+      version: "0.9.0",
       publicKey: config.publicKeyPem,
       status: {
         ...extensionStatus,
@@ -108,7 +108,7 @@ app.use((request, response, next) => {
     response.sendStatus(204);
     return;
   }
-  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.8.0") {
+  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.9.0") {
     response.status(401).json({ error: "Extension bridge version is missing." });
     return;
   }
@@ -148,6 +148,7 @@ app.post("/extension/report", async (request, response) => {
     if (
       pendingCommand?.id === commandId &&
       [
+        "accepted",
         "standby",
         "stopped",
         "failed",
@@ -167,7 +168,7 @@ app.post("/extension/report", async (request, response) => {
 });
 
 const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`AUTOBOT device bridge v0.8.0: ${config.name}`);
+  console.log(`AUTOBOT device bridge v0.9.0: ${config.name}`);
   console.log(`Local extension bridge: http://127.0.0.1:${port}`);
   console.log(`Controller: ${config.controllerUrl}`);
 });

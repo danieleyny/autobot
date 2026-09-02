@@ -1,4 +1,4 @@
-AUTOBOT v0.8.0 — SECOND COMPUTER QUICK START
+AUTOBOT v0.9.0 — SECOND COMPUTER QUICK START
 ==============================================
 
 WHAT YOU NEED
@@ -38,7 +38,7 @@ Run:
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.8.0 appears.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.9.0 appears.
 
 
 5. CREATE A PAIRING CODE
@@ -77,6 +77,8 @@ Keep this terminal open during the test.
 - Leave Allow command center checked.
 - Confirm Friend Laptop appears online in the dashboard.
 - Run Inspection first. Inspection does not select or submit an RSVP.
+- For a live test, the owner selects only the laptops participating that day.
+  Each selected laptop receives one independent, one-use execution lease.
 
 
 OPTIONAL AUTO-START
@@ -95,3 +97,7 @@ IMPORTANT
 - A password entered in the Command Center is encrypted separately for this
   device and decrypted only by its local bridge.
 - Every computer can still operate independently using its local AUTOBOT panel.
+- Pairing remains saved across restarts. Keep Chrome, the event tab, and the
+  device bridge running near the test time.
+- Before returning a borrowed computer, ask the owner to click Remove and
+  revoke, remove the extension, and delete the extracted AUTOBOT folder.

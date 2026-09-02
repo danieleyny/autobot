@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.8.0";
+  const VERSION = "0.9.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -78,7 +78,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.8.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.9.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -167,7 +167,10 @@
       controlEnabled: Boolean(allowControl.checked),
       pageReady: Boolean(normalize(document.title)),
       eventUrl: location.href,
-      eventTitle: normalize($("#event-title").value) || normalize(document.title),
+      eventTitle:
+        normalize($("#event-title").value) ||
+        normalize([...document.querySelectorAll("h1")].find(visible)?.textContent) ||
+        normalize(document.title),
       armed: Boolean(armButton.disabled),
       executing: Boolean(activeControlCommand?.executionStarted),
       commandId: activeControlCommand?.id || null,
@@ -243,7 +246,12 @@
   }
 
   async function handleControlCommand(command) {
-    if (!command?.id || handledControlCommandId === command.id) return;
+    if (!command?.id) return;
+    if (handledControlCommandId === command.id) {
+      const retryPhase = command.type === "standby" ? "standby" : command.type === "stop" ? "stopped" : "accepted";
+      await controlReport(command, retryPhase).catch(() => {});
+      return;
+    }
     handledControlCommandId = command.id;
     if (!allowControl.checked) return;
 
@@ -269,7 +277,7 @@
 
     activeControlCommand = command;
     applyControlConfiguration(command);
-    log(`Command center: ${command.type === "inspect" ? "inspection" : "live primary"} command accepted.`);
+    log(`Command center: ${command.type === "inspect" ? "inspection" : "live fleet"} command accepted.`);
     await controlReport(command, "accepted");
     await arm(command);
   }

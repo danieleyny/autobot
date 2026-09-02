@@ -8,10 +8,10 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.8.0 includes an optional multi-device Command Center. Every device
-keeps the original local extension controls; pairing adds central event setup,
-encrypted password delivery, inspection, arming, standby, stop, and audit
-capabilities.
+AUTOBOT v0.9.0 includes an optional multi-device Command Center for a variable
+fleet of 1–20 laptops. Every device keeps the original local extension controls;
+pairing adds central event setup, encrypted password delivery, readiness checks,
+inspection, arming, stop, audit, and device-revocation capabilities.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -51,7 +51,7 @@ Use these steps when adding a friend's computer to the hosted Command Center:
 
 Pairing codes work once and expire after ten minutes. POSH sign-in, OTP, and
 CAPTCHA/Cloudflare checks remain local and manual. The dashboard may deliver an
-event password encrypted separately for each selected v0.8.0 device.
+event password encrypted separately for each selected v0.9.0 device.
 
 ## Install
 
@@ -90,12 +90,13 @@ Every run writes a timestamped JSONL audit log and screenshot under `artifacts/`
 
 ## Optional Command Center
 
-The Command Center coordinates several computers without turning them into a
-multi-reservation fleet. Inspection commands may run on every selected device.
-A live test creates exactly one database-backed execution lease for the chosen
-primary; every other selected device receives a standby command and cannot
-submit. Once the primary starts the RSVP sequence, a failure blocks the run for
-manual review instead of automatically authorizing another device.
+The Command Center coordinates any selected group from 1–20 computers.
+Inspection commands may run on every selected device without submitting. A live
+test creates one database-backed, one-use execution lease for each selected
+device, so selecting 12 laptops plans 12 reservations and selecting 20 plans 20.
+There is no separate full-fleet mode: simply select the laptops participating in
+that test. A failed device is recorded and is not replaced or retried by another
+account.
 
 Start the controller locally:
 
@@ -142,7 +143,7 @@ instead of localhost. The private device token is stored only in the ignored
 `config/device.json` file. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.8.0. On a POSH event page,
+Reload the unpacked extension after installing v0.9.0. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -154,11 +155,24 @@ encrypts the password in the browser with each device's public key; only that
 device's local bridge can decrypt it. Standalone mode still accepts a password
 directly in the local extension panel.
 
-Validate the controller's primary/standby lease behavior with:
+Validate the controller's independent multi-device lease behavior with:
 
 ```bash
 npm run test:control
 ```
+
+For a live fleet test, first open the same event page on every participating
+laptop. In the dashboard, use **Select online (max 20)**, clear any laptop that
+will not participate, capture or enter the event URL and title, enter the
+password and release time once, and resolve every readiness message. The number
+shown on the **Activate devices** button is the exact number of one-use leases
+that will be issued.
+
+Pairings persist across restarts, so the computers can be connected the day
+before. Keep Chrome, the event tab, and the device bridge running near the test.
+For a borrowed laptop, use **Remove and revoke** in the dashboard after the run,
+run `npm run device:uninstall` if auto-start was installed, remove the Chrome
+extension, and delete the extracted AUTOBOT folder before returning it.
 
 ## Prepare the organizer-owned POSH test
 

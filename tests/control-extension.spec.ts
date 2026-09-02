@@ -29,7 +29,7 @@ async function installChromeMock(page: import("@playwright/test").Page, command:
           const report = message.report as Record<string, unknown>;
           reports.push(report);
           if (
-            ["standby", "stopped", "failed", "inspection-complete", "submitted", "confirmed"].includes(
+            ["accepted", "standby", "stopped", "failed", "inspection-complete", "submitted", "confirmed"].includes(
               String(report.phase)
             )
           ) {
@@ -160,4 +160,56 @@ test("standby receives the fleet password and time without clicking the event", 
   await expect(page.locator("#event-password")).toHaveValue("fleet-password");
   await expect(page.locator("#release-at")).not.toHaveValue("");
   await expect(page.locator("#arm")).toContainText("Standby");
+});
+
+test("live fleet command arms one independent executor without clicking before release", async ({ page }) => {
+  const releaseAt = Date.now() + 60_000;
+  await installChromeMock(page, {
+    id: "fleet-executor-command",
+    runId: "fleet-live-run",
+    type: "arm-live",
+    payload: {
+      runId: "fleet-live-run",
+      eventUrl: "http://127.0.0.1:4173/event",
+      eventTitle: "AUTOBOT Classroom Test Drop",
+      releaseAt,
+      ticketStrategy: "any",
+      eventPassword: "fleet-password",
+      leaseId: "executor-lease-1",
+      fleetSize: 2,
+      execute: true
+    }
+  });
+  await page.goto("http://127.0.0.1:4173/event");
+  await page.setContent(`
+    <title>AUTOBOT Classroom Test Drop</title>
+    <main>
+      <h1>AUTOBOT Classroom Test Drop</h1>
+      <button id="event-action">RSVP</button>
+    </main>
+  `);
+  await page.evaluate(() => {
+    Object.assign(window, { __fleetClicks: 0 });
+    document.querySelector("#event-action")?.addEventListener("click", () => {
+      (window as unknown as { __fleetClicks: number }).__fleetClicks += 1;
+    });
+  });
+  await page.addScriptTag({ path: path.resolve("extension/content.js") });
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __autobotControlReports: Array<{ phase: string }> })
+              .__autobotControlReports.map((report) => report.phase)
+        ),
+      { timeout: 5_000 }
+    )
+    .toContain("accepted");
+  expect(await page.evaluate(() => (window as unknown as { __fleetClicks: number }).__fleetClicks)).toBe(0);
+  await expect(page.locator("#execute")).toBeChecked();
+  await expect(page.locator("#event-password")).toHaveValue("fleet-password");
+  await expect(page.locator("#release-at")).not.toHaveValue("");
+  await expect(page.locator("#arm")).toContainText("Armed");
 });

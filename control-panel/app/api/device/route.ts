@@ -33,6 +33,33 @@ async function authenticateDevice(request: NextRequest): Promise<DeviceAuth | nu
     .first<DeviceAuth>();
 }
 
+async function finalizeLiveRunIfSettled(runId: string, ownerId: string, timestamp: number) {
+  const run = await getD1()
+    .prepare("SELECT status, mode FROM runs WHERE id = ? AND owner_id = ? LIMIT 1")
+    .bind(runId, ownerId)
+    .first<{ status: string; mode: string }>();
+  if (!run || run.mode !== "live" || run.status === "stopped") return;
+
+  const summary = await getD1()
+    .prepare(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN status IN
+           ('submitted', 'confirmed', 'submitted-unconfirmed', 'failed', 'local-override', 'stopped')
+           THEN 1 ELSE 0 END) AS terminal,
+         SUM(CASE WHEN status IN ('failed', 'local-override', 'stopped') THEN 1 ELSE 0 END) AS failed
+       FROM run_devices WHERE run_id = ? AND role = 'executor'`,
+    )
+    .bind(runId)
+    .first<{ total: number; terminal: number; failed: number }>();
+  const total = Number(summary?.total ?? 0);
+  if (!total || Number(summary?.terminal ?? 0) < total) return;
+  await getD1()
+    .prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND owner_id = ?")
+    .bind(Number(summary?.failed ?? 0) > 0 ? "blocked" : "completed", timestamp, runId, ownerId)
+    .run();
+}
+
 export async function POST(request: NextRequest) {
   await ensureControlSchema();
   let body: Record<string, unknown>;
@@ -111,20 +138,28 @@ export async function POST(request: NextRequest) {
 
       const command = await getD1()
         .prepare(
-          `SELECT id, run_id, type, payload_json, created_at FROM commands
-           WHERE device_id = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1`,
+          `SELECT id, run_id, type, payload_json, status, created_at FROM commands
+           WHERE device_id = ? AND status IN ('queued', 'delivered')
+           ORDER BY created_at ASC LIMIT 1`,
         )
         .bind(device.id)
-        .first<{ id: string; run_id: string | null; type: string; payload_json: string; created_at: number }>();
+        .first<{
+          id: string;
+          run_id: string | null;
+          type: string;
+          payload_json: string;
+          status: string;
+          created_at: number;
+        }>();
       if (command) {
-        const delivered = await getD1()
-          .prepare(
-            `UPDATE commands SET status = 'delivered', delivered_at = ?
-             WHERE id = ? AND device_id = ? AND status = 'queued'`,
-          )
-          .bind(timestamp, command.id, device.id)
-          .run();
-        if (delivered.meta.changes) {
+        if (command.status === "queued") {
+          await getD1()
+            .prepare(
+              `UPDATE commands SET status = 'delivered', delivered_at = ?
+               WHERE id = ? AND device_id = ? AND status = 'queued'`,
+            )
+            .bind(timestamp, command.id, device.id)
+            .run();
           await audit({
             ownerId: device.owner_id,
             runId: command.run_id,
@@ -133,16 +168,16 @@ export async function POST(request: NextRequest) {
             action: "command-delivered",
             detail: { commandId: command.id, type: command.type },
           });
-          return NextResponse.json({
-            serverTime: timestamp,
-            command: {
-              id: command.id,
-              runId: command.run_id,
-              type: command.type,
-              payload: parseJson(command.payload_json, {}),
-            },
-          });
         }
+        return NextResponse.json({
+          serverTime: timestamp,
+          command: {
+            id: command.id,
+            runId: command.run_id,
+            type: command.type,
+            payload: parseJson(command.payload_json, {}),
+          },
+        });
       }
       return NextResponse.json({ serverTime: timestamp, command: null });
     }
@@ -189,49 +224,23 @@ export async function POST(request: NextRequest) {
             )
             .bind(timestamp, runId, device.id),
           getD1()
-            .prepare("UPDATE runs SET status = 'completed', updated_at = ? WHERE id = ? AND owner_id = ?")
-            .bind(timestamp, runId, device.owner_id),
-          getD1()
             .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
             .bind(phase, runId, device.id),
         ]);
-
-        const standbys = await getD1()
-          .prepare(
-            `SELECT device_id FROM run_devices
-             WHERE run_id = ? AND role = 'standby' AND device_id != ?`,
-          )
-          .bind(runId, device.id)
-          .all<{ device_id: string }>();
-        for (const standby of standbys.results) {
-          await getD1()
-            .prepare(
-              `INSERT INTO commands
-               (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
-               VALUES (?, ?, ?, ?, 'stop', ?, 'queued', ?)`,
-            )
-            .bind(
-              crypto.randomUUID(),
-              device.owner_id,
-              standby.device_id,
-              runId,
-              JSON.stringify({ runId, reason: "primary-submitted" }),
-              timestamp,
-            )
-            .run();
-        }
-      } else if (runId && ["failed", "local-override"].includes(phase)) {
+        await finalizeLiveRunIfSettled(runId, device.owner_id, timestamp);
+      } else if (runId && ["failed", "local-override", "stopped"].includes(phase)) {
         await getD1().batch([
           getD1()
-            .prepare("UPDATE leases SET status = 'blocked', completed_at = ? WHERE run_id = ? AND device_id = ?")
+            .prepare(
+              `UPDATE leases SET status = 'blocked', completed_at = ?
+               WHERE run_id = ? AND device_id = ? AND status IN ('offered', 'active')`,
+            )
             .bind(timestamp, runId, device.id),
-          getD1()
-            .prepare("UPDATE runs SET status = 'blocked', updated_at = ? WHERE id = ? AND owner_id = ?")
-            .bind(timestamp, runId, device.owner_id),
           getD1()
             .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
             .bind(phase, runId, device.id),
         ]);
+        await finalizeLiveRunIfSettled(runId, device.owner_id, timestamp);
       } else if (runId) {
         await getD1()
           .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")

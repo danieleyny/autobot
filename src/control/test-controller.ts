@@ -86,18 +86,18 @@ async function pairDevice(cookie: string, name: string) {
     action: "pair",
     code: pairing.code,
     name,
-    version: "0.8.0-test",
+    version: "0.9.0-test",
     publicKey: keys.publicKeyPem,
   });
   return { id: String(device.deviceId), token: String(device.token), keys };
 }
 
-async function poll(token: string, keys: DeviceKeyPair) {
+async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Classroom Test Drop") {
   return jsonRequest(
     "/api/device",
     {
       action: "poll",
-      version: "0.8.0-test",
+      version: "0.9.0-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -105,6 +105,8 @@ async function poll(token: string, keys: DeviceKeyPair) {
         controlConnected: true,
         controlEnabled: true,
         pageReady: true,
+        eventUrl: "https://posh.vip/e/test-release",
+        eventTitle,
       },
     },
     { token },
@@ -141,12 +143,12 @@ try {
     throw new Error("The running command center rejected the test PIN. Set AUTOBOT_TEST_PIN to its configured PIN.");
   }
   assert.ok(cookie, "The test PIN did not issue a dashboard session.");
-  const primary = await pairDevice(cookie, `Primary ${crypto.randomUUID().slice(0, 8)}`);
-  const standby = await pairDevice(cookie, `Standby ${crypto.randomUUID().slice(0, 8)}`);
-  await poll(primary.token, primary.keys);
-  await poll(standby.token, standby.keys);
-
   const eventTitle = `AUTOBOT Lease Test ${crypto.randomUUID().slice(0, 8)}`;
+  const executorOne = await pairDevice(cookie, `Executor One ${crypto.randomUUID().slice(0, 8)}`);
+  const executorTwo = await pairDevice(cookie, `Executor Two ${crypto.randomUUID().slice(0, 8)}`);
+  await poll(executorOne.token, executorOne.keys, eventTitle);
+  await poll(executorTwo.token, executorTwo.keys, eventTitle);
+
   const created = await jsonRequest(
     "/api/control",
     {
@@ -169,75 +171,106 @@ try {
     {
       action: "arm-run",
       runId,
-      deviceIds: [primary.id, standby.id],
-      primaryDeviceId: primary.id,
+      deviceIds: [executorOne.id, executorTwo.id],
       confirmEventTitle: eventTitle,
       encryptedSecrets: {
-        [primary.id]: encryptForDevice(eventPassword, primary.keys.publicKeyPem),
-        [standby.id]: encryptForDevice(eventPassword, standby.keys.publicKeyPem),
+        [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
+        [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
       },
     },
     { cookie },
   );
 
-  const primaryPoll = await poll(primary.token, primary.keys);
-  const standbyPoll = await poll(standby.token, standby.keys);
-  const primaryCommand = primaryPoll.command as Record<string, unknown>;
-  const standbyCommand = standbyPoll.command as Record<string, unknown>;
-  assert.equal(primaryCommand.type, "arm-live");
-  assert.equal(standbyCommand.type, "standby");
-  const primaryPayload = primaryCommand.payload as Record<string, unknown>;
-  const standbyPayload = standbyCommand.payload as Record<string, unknown>;
-  assert.equal(primaryPayload.eventPassword, undefined);
-  assert.equal(standbyPayload.eventPassword, undefined);
+  const executorOnePoll = await poll(executorOne.token, executorOne.keys, eventTitle);
+  const executorTwoPoll = await poll(executorTwo.token, executorTwo.keys, eventTitle);
+  const executorOneCommand = executorOnePoll.command as Record<string, unknown>;
+  const executorTwoCommand = executorTwoPoll.command as Record<string, unknown>;
+  assert.equal(executorOneCommand.type, "arm-live");
+  assert.equal(executorTwoCommand.type, "arm-live");
+  assert.notEqual(
+    (executorOneCommand.payload as Record<string, unknown>).leaseId,
+    (executorTwoCommand.payload as Record<string, unknown>).leaseId,
+  );
+  const redelivered = await poll(executorOne.token, executorOne.keys, eventTitle);
+  assert.equal((redelivered.command as Record<string, unknown>).id, executorOneCommand.id);
+  const executorOnePayload = executorOneCommand.payload as Record<string, unknown>;
+  const executorTwoPayload = executorTwoCommand.payload as Record<string, unknown>;
+  assert.equal(executorOnePayload.eventPassword, undefined);
+  assert.equal(executorTwoPayload.eventPassword, undefined);
   assert.equal(
-    decryptForDevice(String(primaryPayload.eventSecret), primary.keys.privateKeyPem),
+    decryptForDevice(String(executorOnePayload.eventSecret), executorOne.keys.privateKeyPem),
     eventPassword,
   );
   assert.equal(
-    decryptForDevice(String(standbyPayload.eventSecret), standby.keys.privateKeyPem),
+    decryptForDevice(String(executorTwoPayload.eventSecret), executorTwo.keys.privateKeyPem),
     eventPassword,
   );
-  assert.equal(primaryPayload.releaseAt, standbyPayload.releaseAt);
+  assert.equal(executorOnePayload.releaseAt, executorTwoPayload.releaseAt);
+  assert.equal(executorOnePayload.fleetSize, 2);
 
   await jsonRequest(
     "/api/device",
     {
       action: "report",
-      commandId: primaryCommand.id,
+      commandId: executorOneCommand.id,
       runId,
       phase: "execution-started",
     },
-    { token: primary.token },
+    { token: executorOne.token },
   );
   await jsonRequest(
     "/api/device",
     {
       action: "report",
-      commandId: standbyCommand.id,
+      commandId: executorTwoCommand.id,
       runId,
       phase: "execution-started",
     },
-    { token: standby.token, expectedStatus: 409 },
+    { token: executorTwo.token },
   );
   await jsonRequest(
     "/api/device",
     {
       action: "report",
-      commandId: primaryCommand.id,
+      commandId: executorOneCommand.id,
       runId,
       phase: "submitted",
       detail: { test: true },
     },
-    { token: primary.token },
+    { token: executorOne.token },
+  );
+
+  const partialState = await jsonRequest("/api/control", null, { cookie });
+  const partialRun = (partialState.runs as Array<Record<string, unknown>>).find((item) => item.id === runId);
+  assert.equal(partialRun?.status, "armed");
+
+  await jsonRequest(
+    "/api/device",
+    {
+      action: "report",
+      commandId: executorTwoCommand.id,
+      runId,
+      phase: "submitted",
+      detail: { test: true },
+    },
+    { token: executorTwo.token },
   );
 
   const finalState = await jsonRequest("/api/control", null, { cookie });
   const run = (finalState.runs as Array<Record<string, unknown>>).find((item) => item.id === runId);
-  const lease = (finalState.leases as Array<Record<string, unknown>>).find((item) => item.run_id === runId);
+  const leases = (finalState.leases as Array<Record<string, unknown>>).filter((item) => item.run_id === runId);
   assert.equal(run?.status, "completed");
-  assert.equal(lease?.status, "submitted");
-  console.log("Control integration passed: encrypted fleet setup, one primary lease, standby blocked, run completed once.");
+  assert.equal(leases.length, 2);
+  assert.ok(leases.every((lease) => lease.status === "submitted"));
+
+  await jsonRequest(
+    "/api/control",
+    { action: "remove-device", deviceId: executorTwo.id },
+    { cookie },
+  );
+  const afterRemoval = await jsonRequest("/api/control", null, { cookie });
+  assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
+  console.log("Control integration passed: encrypted two-device fleet, two independent leases, reliable redelivery, and device revocation.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }
