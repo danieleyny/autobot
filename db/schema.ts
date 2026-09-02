@@ -10,6 +10,9 @@ export const devices = sqliteTable(
     publicKey: text("public_key"),
     version: text("version").notNull().default("unknown"),
     mode: text("mode", { enum: ["local", "managed"] }).notNull().default("local"),
+    approvalStatus: text("approval_status", { enum: ["pending", "approved"] })
+      .notNull()
+      .default("approved"),
     stateJson: text("state_json").notNull().default("{}"),
     lastSeenAt: integer("last_seen_at"),
     createdAt: integer("created_at").notNull(),
@@ -28,6 +31,9 @@ export const pairingCodes = sqliteTable(
     label: text("label").notNull(),
     expiresAt: integer("expires_at").notNull(),
     usedAt: integer("used_at"),
+    maxUses: integer("max_uses").notNull().default(1),
+    usedCount: integer("used_count").notNull().default(0),
+    approvalRequired: integer("approval_required", { mode: "boolean" }).notNull().default(false),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("idx_pairing_owner_expires").on(table.ownerId, table.expiresAt)],

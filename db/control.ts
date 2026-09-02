@@ -11,6 +11,7 @@ const schemaStatements = [
     public_key TEXT,
     version TEXT NOT NULL DEFAULT 'unknown',
     mode TEXT NOT NULL DEFAULT 'local',
+    approval_status TEXT NOT NULL DEFAULT 'approved',
     state_json TEXT NOT NULL DEFAULT '{}',
     last_seen_at INTEGER,
     created_at INTEGER NOT NULL
@@ -23,6 +24,9 @@ const schemaStatements = [
     label TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
     used_at INTEGER,
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    approval_required INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_pairing_owner_expires ON pairing_codes(owner_id, expires_at)`,
@@ -103,10 +107,26 @@ export async function ensureControlSchema(): Promise<void> {
     schemaReady = db
       .batch(schemaStatements.map((statement) => db.prepare(statement)))
       .then(async () => {
-        const columns = await db.prepare("PRAGMA table_info(devices)").all<{ name: string }>();
-        if (!columns.results.some((column) => column.name === "public_key")) {
+        const deviceColumns = await db.prepare("PRAGMA table_info(devices)").all<{ name: string }>();
+        if (!deviceColumns.results.some((column) => column.name === "public_key")) {
           await db.prepare("ALTER TABLE devices ADD COLUMN public_key TEXT").run();
         }
+        if (!deviceColumns.results.some((column) => column.name === "approval_status")) {
+          await db.prepare("ALTER TABLE devices ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'").run();
+        }
+        const pairingColumns = await db.prepare("PRAGMA table_info(pairing_codes)").all<{ name: string }>();
+        if (!pairingColumns.results.some((column) => column.name === "max_uses")) {
+          await db.prepare("ALTER TABLE pairing_codes ADD COLUMN max_uses INTEGER NOT NULL DEFAULT 1").run();
+        }
+        if (!pairingColumns.results.some((column) => column.name === "used_count")) {
+          await db.prepare("ALTER TABLE pairing_codes ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0").run();
+        }
+        if (!pairingColumns.results.some((column) => column.name === "approval_required")) {
+          await db.prepare("ALTER TABLE pairing_codes ADD COLUMN approval_required INTEGER NOT NULL DEFAULT 0").run();
+        }
+        await db
+          .prepare("UPDATE pairing_codes SET used_count = max_uses WHERE used_at IS NOT NULL AND used_count = 0")
+          .run();
         await db.prepare("PRAGMA optimize").run();
       })
       .catch((error) => {
