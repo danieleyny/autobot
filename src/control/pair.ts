@@ -22,7 +22,7 @@ const response = await fetch(`${controllerUrl}/api/device`, {
     action: "pair",
     code,
     name,
-    version: "0.9.0",
+    version: "0.10.0",
     publicKey: keyPair.publicKeyPem,
   }),
 });
@@ -31,6 +31,7 @@ const result = (await response.json()) as {
   deviceId?: string;
   token?: string;
   name?: string;
+  approvalStatus?: "pending" | "approved";
 };
 if (!response.ok || !result.deviceId || !result.token) {
   throw new Error(result.error || `Pairing failed with HTTP ${response.status}.`);
@@ -51,4 +52,7 @@ await chmod(target, 0o600).catch(() => {});
 
 console.log(`Paired ${deviceConfig.name}.`);
 console.log(`Private device credentials and encryption key saved to ${target}.`);
+if (result.approvalStatus === "pending") {
+  console.log("This laptop is waiting for approval in the Command Center.");
+}
 console.log("Start the optional bridge with: npm run device");

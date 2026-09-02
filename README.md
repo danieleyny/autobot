@@ -8,10 +8,11 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.9.0 includes an optional multi-device Command Center for a variable
+AUTOBOT v0.10.0 includes an optional multi-device Command Center for a variable
 fleet of 1–20 laptops. Every device keeps the original local extension controls;
-pairing adds central event setup, encrypted password delivery, readiness checks,
-inspection, arming, stop, audit, and device-revocation capabilities.
+pairing adds batch enrollment and approval, central event setup, encrypted
+password delivery, readiness checks, rehearsal, arming, per-device results,
+stop, audit, and device-revocation capabilities.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -21,37 +22,40 @@ configuration records that POSH has approved the controlled automation test.
 
 Use these steps when adding a friend's computer to the hosted Command Center:
 
-1. Click **Code → Download ZIP** on GitHub, then extract the ZIP.
+1. Download the newest release ZIP from GitHub, then extract it.
 2. Install Google Chrome and the current Node.js LTS release.
-3. Open Terminal or PowerShell inside the extracted `autobot` folder and run:
-
-   ```bash
-   npm install
-   ```
-
-4. In Chrome, open `chrome://extensions`, enable **Developer mode**, click
+3. In the [AUTOBOT Command Center](https://autobot-command-center.avgschnook.chatgpt.site),
+   start a two-hour enrollment window for the number of laptops being added.
+4. On Windows, double-click `SETUP-WINDOWS.cmd`. On Mac, double-click
+   `SETUP-MAC.command`. The assistant installs dependencies, asks for the
+   enrollment code and laptop name, registers automatic startup, and starts the
+   bridge.
+5. In Chrome, open `chrome://extensions`, enable **Developer mode**, click
    **Load unpacked**, and select the extracted `extension` folder.
-5. Open the [AUTOBOT Command Center](https://autobot-command-center.avgschnook.chatgpt.site),
-   enter the dashboard PIN, and create a one-time pairing code.
-6. On the second computer, replace `PAIRING_CODE` below and run:
+6. Approve the laptop in the dashboard.
+7. Open the organizer-owned POSH test event in Chrome, refresh once, and leave
+   **Allow command center** checked in the AUTOBOT panel.
+8. Confirm the laptop is ready in the fleet overview, then run a **Rehearsal**
+   before attempting a controlled live test.
 
-   ```bash
-   npm run device:pair -- \
-     --controller=https://autobot-command-center.avgschnook.chatgpt.site \
-     --code=PAIRING_CODE \
-     --name="Friend Laptop"
+For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
-   npm run device
-   ```
+```bash
+npm install
+npm run device:pair -- \
+  --controller=https://autobot-command-center.avgschnook.chatgpt.site \
+  --code=PAIRING_CODE \
+  --name="Friend Laptop"
+npm run device:install
+npm run device
+```
 
-7. Keep that terminal open. Open the organizer-owned POSH test event in Chrome,
-   refresh once, and leave **Allow command center** checked in the AUTOBOT panel.
-8. Confirm the device appears online, then run **Inspection** before attempting
-   a controlled live test.
-
-Pairing codes work once and expire after ten minutes. POSH sign-in, OTP, and
-CAPTCHA/Cloudflare checks remain local and manual. The dashboard may deliver an
-event password encrypted separately for each selected v0.9.0 device.
+One-time pairing codes work once and expire after ten minutes. A batch
+enrollment code works for the configured number of laptops for up to two hours;
+every enrolled laptop remains blocked until approved in the dashboard. POSH
+sign-in, OTP, and CAPTCHA/Cloudflare checks remain local and manual. The
+dashboard may deliver an event password encrypted separately for each selected
+v0.10.0 device.
 
 ## Install
 
@@ -91,7 +95,7 @@ Every run writes a timestamped JSONL audit log and screenshot under `artifacts/`
 ## Optional Command Center
 
 The Command Center coordinates any selected group from 1–20 computers.
-Inspection commands may run on every selected device without submitting. A live
+Rehearsal commands may run on every selected device without submitting. A live
 test creates one database-backed, one-use execution lease for each selected
 device, so selecting 12 laptops plans 12 reservations and selecting 20 plans 20.
 There is no separate full-fleet mode: simply select the laptops participating in
@@ -104,13 +108,14 @@ Start the controller locally:
 npm run control:dev
 ```
 
-Open `http://localhost:3000`, enter the dashboard PIN, and create a ten-minute
-pairing code. The hosted controller is available at
+Open `http://localhost:3000`, enter the dashboard PIN, and start a two-hour
+fleet enrollment or create a ten-minute one-time pairing code. The hosted
+controller is available at
 `https://autobot-command-center.avgschnook.chatgpt.site` for devices that are
 not on the same computer.
 
 The hosted URL opens to an AUTOBOT PIN screen and does not require a ChatGPT
-login. Successful sessions last up to twelve hours, the **Lock** button ends the
+login. Successful sessions last up to 24 hours, the **Lock** button ends the
 browser session immediately, and repeated incorrect PIN attempts are
 temporarily blocked. The PIN and session-signing secret are stored only as
 encrypted hosting secrets, not in this repository or in the browser.
@@ -139,11 +144,13 @@ device` or ask IT to approve the user-level startup entry. Remove it later with
 `npm run device:uninstall`.
 
 For computers on different networks, use the deployed HTTPS Command Center URL
-instead of localhost. The private device token is stored only in the ignored
-`config/device.json` file. The bridge listens only on that computer's loopback
+instead of localhost. Private device credentials are stored in the operating
+system's per-user application-data directory instead of the downloaded release
+folder. Existing legacy `config/device.json` credentials migrate automatically
+when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.9.0. On a POSH event page,
+Reload the unpacked extension after installing v0.10.0. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -162,7 +169,7 @@ npm run test:control
 ```
 
 For a live fleet test, first open the same event page on every participating
-laptop. In the dashboard, use **Select online (max 20)**, clear any laptop that
+laptop. In the dashboard, use **Select ready**, clear any laptop that
 will not participate, capture or enter the event URL and title, enter the
 password and release time once, and resolve every readiness message. The number
 shown on the **Activate devices** button is the exact number of one-use leases

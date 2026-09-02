@@ -27,6 +27,7 @@ let extensionStatus: Record<string, unknown> = {};
 let extensionSeenAt = 0;
 let pendingCommand: ControllerCommand | null = null;
 let controllerOnline = false;
+let approvalPending = false;
 let stopping = false;
 
 async function controllerRequest(body: Record<string, unknown>) {
@@ -50,7 +51,7 @@ async function heartbeat() {
     const extensionConnected = Date.now() - extensionSeenAt < 4_000;
     const result = await controllerRequest({
       action: "poll",
-      version: "0.9.0",
+      version: "0.10.0",
       publicKey: config.publicKeyPem,
       status: {
         ...extensionStatus,
@@ -61,6 +62,14 @@ async function heartbeat() {
       },
     });
     controllerOnline = true;
+    const wasApprovalPending = approvalPending;
+    approvalPending = result.approvalPending === true;
+    if (approvalPending && !wasApprovalPending) {
+      console.log("Waiting for this laptop to be approved in the Command Center.");
+    }
+    if (!approvalPending && wasApprovalPending) {
+      console.log("This laptop was approved for fleet control.");
+    }
     if (!pendingCommand && result.command && typeof result.command === "object") {
       const command = result.command as ControllerCommand;
       try {
@@ -108,7 +117,7 @@ app.use((request, response, next) => {
     response.sendStatus(204);
     return;
   }
-  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.9.0") {
+  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.10.0") {
     response.status(401).json({ error: "Extension bridge version is missing." });
     return;
   }
@@ -120,6 +129,7 @@ app.get("/health", (_request, response) => {
     ok: true,
     device: config.name,
     controllerOnline,
+    approvalPending,
     extensionConnected: Date.now() - extensionSeenAt < 4_000,
     pendingCommand: pendingCommand?.type ?? null,
   });
@@ -130,6 +140,7 @@ app.post("/extension/poll", (request, response) => {
   extensionStatus = request.body?.status && typeof request.body.status === "object" ? request.body.status : {};
   response.json({
     connected: controllerOnline,
+    approvalPending,
     deviceName: config.name,
     command: extensionStatus.controlEnabled === false ? null : pendingCommand,
   });
@@ -168,7 +179,7 @@ app.post("/extension/report", async (request, response) => {
 });
 
 const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`AUTOBOT device bridge v0.9.0: ${config.name}`);
+  console.log(`AUTOBOT device bridge v0.10.0: ${config.name}`);
   console.log(`Local extension bridge: http://127.0.0.1:${port}`);
   console.log(`Controller: ${config.controllerUrl}`);
 });

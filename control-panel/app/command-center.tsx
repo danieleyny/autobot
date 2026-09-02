@@ -7,6 +7,7 @@ type Device = {
   name: string;
   version: string;
   mode: "local" | "managed";
+  approvalStatus: "pending" | "approved";
   state: Record<string, unknown>;
   encryptionPublicKey: string | null;
   encryptionReady: boolean;
@@ -38,10 +39,20 @@ type AuditEvent = {
   created_at: number;
 };
 
+type RunDevice = {
+  run_id: string;
+  device_id: string;
+  device_name: string;
+  role: "executor" | "inspection";
+  status: string;
+  updated_at: number;
+};
+
 type ControlState = {
   devices: Device[];
   runs: Run[];
   leases: Array<Record<string, unknown>>;
+  runDevices: RunDevice[];
   events: AuditEvent[];
   serverTime: number;
 };
@@ -50,16 +61,18 @@ const emptyState: ControlState = {
   devices: [],
   runs: [],
   leases: [],
+  runDevices: [],
   events: [],
   serverTime: Date.now(),
 };
 
 const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
+const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/latest";
 
 function supportsFleetExecution(version: string) {
   const match = /^(\d+)\.(\d+)\./.exec(version);
   if (!match) return false;
-  return Number(match[1]) > 0 || Number(match[2]) >= 9;
+  return Number(match[1]) > 0 || Number(match[2]) >= 10;
 }
 
 function sameEventPage(left: unknown, right: string) {
@@ -74,9 +87,10 @@ function sameEventPage(left: unknown, right: string) {
 }
 
 function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
+  if (device.approvalStatus !== "approved") return "Waiting for approval";
   if (!device.online) return "Offline";
   if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
-  if (!supportsFleetExecution(device.version)) return "Update to v0.9.0";
+  if (!supportsFleetExecution(device.version)) return "Update to v0.10.0";
   if (!device.encryptionReady) return "Password security not ready";
   if (device.state.pageReady !== true) return "Open the event page";
   if (!sameEventPage(device.state.eventUrl, eventUrl)) return "Wrong event page";
@@ -117,6 +131,7 @@ async function encryptEventPassword(password: string, publicKeyPem: string): Pro
 }
 
 function deviceSummary(device: Device) {
+  if (device.approvalStatus !== "approved") return "Approval needed";
   const pageReady = device.state.pageReady === true;
   const armed = device.state.armed === true;
   if (!device.online) return "Offline";
@@ -131,8 +146,14 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
-  const [pairLabel, setPairLabel] = useState("New device");
-  const [pairing, setPairing] = useState<{ code: string; expiresAt: number } | null>(null);
+  const [pairLabel, setPairLabel] = useState("Classroom fleet");
+  const [enrollmentMax, setEnrollmentMax] = useState(20);
+  const [pairing, setPairing] = useState<{
+    code: string;
+    expiresAt: number;
+    kind: "enrollment" | "single";
+    maxDevices: number;
+  } | null>(null);
   const [mode, setMode] = useState<"inspection" | "live">("inspection");
   const [eventUrl, setEventUrl] = useState("https://posh.vip/e/test-release");
   const [eventTitle, setEventTitle] = useState("AUTOBOT Classroom Test Drop");
@@ -191,11 +212,20 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   }, []);
 
   const activeRun = state.runs.find((run) => ["draft", "armed", "blocked"].includes(run.status));
+  const latestRun = activeRun ?? state.runs[0];
   const onlineDevices = state.devices.filter((device) => device.online);
+  const pendingDevices = state.devices.filter((device) => device.approvalStatus === "pending");
+  const outdatedDevices = state.devices.filter((device) => !supportsFleetExecution(device.version));
   const activeLeases = state.leases.filter((lease) => ["offered", "active"].includes(String(lease.status)));
   const selectedIdSet = new Set(selected);
   const selectedDevices = state.devices.filter((device) => selectedIdSet.has(device.id));
   const readySelectedDevices = selectedDevices.filter((device) => !readinessIssue(device, eventUrl, eventTitle));
+  const latestRunDevices = latestRun
+    ? state.runDevices.filter((device) => device.run_id === latestRun.id)
+    : [];
+  const latestRunStatusByDevice = new Map(
+    latestRunDevices.map((device) => [device.device_id, device.status]),
+  );
 
   const post = async (payload: Record<string, unknown>) => {
     const response = await fetch("/api/control", {
@@ -217,13 +247,67 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     setNotice("");
     try {
       const result = await post({ action: "create-pairing", label: pairLabel });
-      setPairing({ code: String(result.code), expiresAt: Number(result.expiresAt) });
+      setPairing({
+        code: String(result.code),
+        expiresAt: Number(result.expiresAt),
+        kind: "single",
+        maxDevices: 1,
+      });
       setNotice("Pairing code created. It can be used once during the next ten minutes.");
       await refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const createEnrollment = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({
+        action: "create-enrollment",
+        label: pairLabel,
+        maxDevices: enrollmentMax,
+      });
+      setPairing({
+        code: String(result.code),
+        expiresAt: Number(result.expiresAt),
+        kind: "enrollment",
+        maxDevices: Number(result.maxDevices),
+      });
+      setNotice("Two-hour enrollment started. Approve each laptop after it appears below.");
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveDevice = async (device: Device) => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "approve-device", deviceId: device.id });
+      setNotice(`${device.name} is approved for fleet control.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copySetupCommand = async () => {
+    if (!pairing) return;
+    const command = `npm run device:pair -- --controller=${window.location.origin} --code=${pairing.code} --name="Laptop 01"`;
+    try {
+      await navigator.clipboard.writeText(command);
+      setNotice("Setup command copied. Change Laptop 01 to that computer's label before running it.");
+    } catch {
+      setNotice(command);
     }
   };
 
@@ -331,7 +415,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       setEventPassword("");
       setNotice(
         mode === "inspection"
-          ? `Inspection and setup sent to ${selected.length} device${selected.length === 1 ? "" : "s"}.`
+          ? `Rehearsal sent to ${selected.length} device${selected.length === 1 ? "" : "s"}. No RSVP controls will be clicked.`
           : `Fleet activated. ${selected.length} device${selected.length === 1 ? " has" : "s have"} one independent execution lease each.`,
       );
       await refresh();
@@ -370,12 +454,28 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   };
 
   const selectOnlineDevices = () => {
-    const next = onlineDevices.slice(0, 20).map((device) => device.id);
+    const next = onlineDevices
+      .filter((device) => device.approvalStatus === "approved")
+      .slice(0, 20)
+      .map((device) => device.id);
     setSelected(next);
     setNotice(
       next.length
         ? `Selected ${next.length} online device${next.length === 1 ? "" : "s"}.`
         : "No devices are online yet.",
+    );
+  };
+
+  const selectReadyDevices = () => {
+    const next = state.devices
+      .filter((device) => !readinessIssue(device, eventUrl, eventTitle))
+      .slice(0, 20)
+      .map((device) => device.id);
+    setSelected(next);
+    setNotice(
+      next.length
+        ? `Selected ${next.length} fully ready device${next.length === 1 ? "" : "s"}.`
+        : "No devices currently pass every readiness check.",
     );
   };
 
@@ -414,6 +514,9 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
             <span className="rounded-full bg-[#eaf4d9] px-3 py-1.5 text-[#35511e]">{onlineDevices.length} online</span>
+            {pendingDevices.length > 0 ? (
+              <span className="rounded-full bg-[#fff0d9] px-3 py-1.5 text-[#79501f]">{pendingDevices.length} awaiting approval</span>
+            ) : null}
             <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{selected.length} selected</span>
             <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{readySelectedDevices.length}/{selected.length} ready</span>
             <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{activeLeases.length ? `${activeLeases.length} live lease${activeLeases.length === 1 ? "" : "s"}` : "No live leases"}</span>
@@ -427,6 +530,15 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         </div>
       )}
 
+      {outdatedDevices.length > 0 ? (
+        <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
+            <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.10.0 update before a live fleet run.</span>
+            <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download current release</a>
+          </div>
+        </div>
+      ) : null}
+
       <div className="mx-auto grid max-w-[1500px] gap-5 px-5 py-6 lg:grid-cols-[310px_minmax(0,1fr)] lg:px-8">
         <aside className="space-y-4">
           <div className="flex items-end justify-between">
@@ -437,18 +549,25 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
             <span className="text-xs font-semibold text-[#69736b]">{loading ? "Loading…" : `${state.devices.length} paired`}</span>
           </div>
 
-          <div className="flex gap-2">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={selectReadyDevices}
+              className="rounded-full bg-[#172018] px-3 py-2 text-xs font-bold text-white"
+            >
+              Select ready
+            </button>
             <button
               type="button"
               onClick={selectOnlineDevices}
-              className="flex-1 rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
+              className="rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
             >
-              Select online (max 20)
+              Select online
             </button>
             <button
               type="button"
               onClick={() => setSelected([])}
-              className="rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
+              className="col-span-2 rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
             >
               Clear
             </button>
@@ -473,7 +592,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   >
                     <button
                       type="button"
-                      onClick={() => device.online && toggleDevice(device.id)}
+                      onClick={() => device.online && device.approvalStatus === "approved" && toggleDevice(device.id)}
                       className="w-full p-4 text-left"
                       aria-pressed={selectedIdSet.has(device.id)}
                     >
@@ -497,14 +616,26 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                         {issue || "Ready for fleet test"}
                       </p>
                     </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => removeDevice(device)}
-                      className="w-full border-t border-[#edf0e9] px-4 py-2 text-left text-[11px] font-semibold text-[#7c5248] hover:bg-[#fff7f4] disabled:opacity-40"
-                    >
-                      Remove and revoke
-                    </button>
+                    <div className="flex border-t border-[#edf0e9]">
+                      {device.approvalStatus === "pending" ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => approveDevice(device)}
+                          className="flex-1 px-4 py-2 text-left text-[11px] font-bold text-[#35511e] hover:bg-[#f8ffed] disabled:opacity-40"
+                        >
+                          Approve device
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => removeDevice(device)}
+                        className="flex-1 px-4 py-2 text-left text-[11px] font-semibold text-[#7c5248] hover:bg-[#fff7f4] disabled:opacity-40"
+                      >
+                        Remove and revoke
+                      </button>
+                    </div>
                   </div>
                 );
               })
@@ -512,17 +643,30 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           </div>
 
           <div className="rounded-2xl border border-[#d7dcd3] bg-white p-4">
-            <p className="text-sm font-semibold">Pair another device</p>
+            <p className="text-sm font-semibold">Enroll laptops</p>
+            <p className="mt-1 text-xs leading-5 text-[#6b746c]">One two-hour code can enroll the whole classroom fleet. Every new laptop still requires approval here.</p>
             <label className="field mt-3">
-              <span>Device label</span>
+              <span>Enrollment label</span>
               <input value={pairLabel} onChange={(event) => setPairLabel(event.target.value)} />
             </label>
-            <button disabled={busy} onClick={createPairing} className="mt-3 w-full rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Create pairing code</button>
+            <label className="field mt-3">
+              <span>Maximum laptops</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={enrollmentMax}
+                onChange={(event) => setEnrollmentMax(Math.min(20, Math.max(1, Number(event.target.value) || 1)))}
+              />
+            </label>
+            <button disabled={busy} onClick={createEnrollment} className="mt-3 w-full rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Start 2-hour enrollment</button>
+            <button disabled={busy} onClick={createPairing} className="mt-2 w-full rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-50">Create one-time code instead</button>
             {pairing && (
               <div className="mt-3 rounded-xl bg-[#172018] p-3 text-center text-white">
-                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#aeb8af]">One-time code</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#aeb8af]">{pairing.kind === "enrollment" ? `Enrollment code · up to ${pairing.maxDevices}` : "One-time code"}</p>
                 <p className="mt-1 font-mono text-2xl font-black tracking-[0.18em] text-[#b8ff5a]">{pairing.code}</p>
                 <p className="mt-1 text-[10px] text-[#aeb8af]">Expires {new Date(pairing.expiresAt).toLocaleTimeString()}</p>
+                <button type="button" onClick={copySetupCommand} className="mt-3 rounded-full border border-[#515d53] px-3 py-1.5 text-[11px] font-bold text-white">Copy setup command</button>
               </div>
             )}
           </div>
@@ -544,7 +688,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   </p>
                 </div>
                 <div className="flex rounded-full border border-[#cbd2c7] bg-[#f3f5ef] p-1 text-xs font-bold">
-                  <button onClick={() => setMode("inspection")} className={`rounded-full px-3 py-1.5 ${mode === "inspection" ? "bg-white shadow-sm" : "text-[#69736b]"}`}>Inspection</button>
+                  <button onClick={() => setMode("inspection")} className={`rounded-full px-3 py-1.5 ${mode === "inspection" ? "bg-white shadow-sm" : "text-[#69736b]"}`}>Rehearsal</button>
                   <button onClick={() => setMode("live")} className={`rounded-full px-3 py-1.5 ${mode === "live" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}>Live test</button>
                 </div>
               </div>
@@ -622,7 +766,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 <p className="text-sm font-semibold">Execution policy</p>
                 <p className="mt-1 text-xs leading-5 text-[#6b746c]">
                   {mode === "inspection"
-                    ? "No quantity or checkout controls are clicked on any device."
+                    ? "Rehearsal checks every selected laptop without changing ticket quantity or submitting checkout."
                     : `${selected.length || "No"} selected device${selected.length === 1 ? "" : "s"} = ${selected.length || "no"} planned reservation${selected.length === 1 ? "" : "s"}. Each account can submit at most once; no device receives a replacement lease.`}
                 </p>
               </div>
@@ -640,7 +784,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
               <div className="mt-6 flex flex-wrap gap-3">
                 <button disabled={busy || Boolean(activeRun) || selected.length === 0} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
-                  {busy ? "Working…" : mode === "live" ? `Activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run inspection"}
+                  {busy ? "Working…" : mode === "live" ? `Activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run fleet rehearsal"}
                 </button>
                 <button disabled={busy || !activeRun} onClick={stopAll} className="rounded-full border border-[#cbd2c7] px-5 py-3 text-sm font-bold text-[#4d594f] disabled:opacity-40">Stop active run</button>
               </div>
@@ -663,6 +807,50 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
               <button disabled={!activeRun || busy} onClick={stopAll} className="mt-6 w-full rounded-full border border-[#515d53] px-4 py-2.5 text-sm font-bold text-[#d8ddd8] disabled:opacity-40">Emergency stop all</button>
             </article>
           </div>
+
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 sm:p-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Fleet overview</p>
+                <h2 className="mt-1 text-xl font-semibold">Readiness and results</h2>
+              </div>
+              <span className="text-xs font-semibold text-[#69736b]">
+                {latestRun ? `${latestRun.eventTitle} · ${latestRun.status}` : "No run history yet"}
+              </span>
+            </div>
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                <thead className="text-[11px] uppercase tracking-[0.12em] text-[#7b847c]">
+                  <tr className="border-b border-[#dfe4dc]">
+                    <th className="pb-3 font-bold">Laptop</th>
+                    <th className="pb-3 font-bold">Connection</th>
+                    <th className="pb-3 font-bold">Preflight</th>
+                    <th className="pb-3 font-bold">Latest run</th>
+                    <th className="pb-3 font-bold">Last check-in</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.devices.length === 0 ? (
+                    <tr><td colSpan={5} className="py-8 text-center text-[#7b847c]">Enrolled laptops will appear here.</td></tr>
+                  ) : (
+                    state.devices.map((device) => {
+                      const issue = readinessIssue(device, eventUrl, eventTitle);
+                      const runStatus = latestRunStatusByDevice.get(device.id);
+                      return (
+                        <tr key={device.id} className="border-b border-[#edf0e9] last:border-0">
+                          <td className="py-3 font-semibold">{device.name}<span className="ml-2 font-mono text-[10px] text-[#7b847c]">{device.version}</span></td>
+                          <td className="py-3"><span className={device.online ? "text-[#446426]" : "text-[#8b5e52]"}>{device.online ? "Online" : "Offline"}</span></td>
+                          <td className={`py-3 font-semibold ${issue ? "text-[#9b5f24]" : "text-[#446426]"}`}>{issue || "Ready"}</td>
+                          <td className="py-3 capitalize text-[#59645b]">{runStatus ? runStatus.replaceAll("-", " ") : "Not included"}</td>
+                          <td className="py-3 font-mono text-xs text-[#657066]">{device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleTimeString() : "Never"}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
 
           <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 sm:p-6">
             <div className="flex items-end justify-between gap-4">

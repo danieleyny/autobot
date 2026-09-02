@@ -7,9 +7,9 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.9.0
+## Optional Command Center in v0.10.0
 
-The normal panel remains fully standalone. If the local v0.9.0 device bridge is
+The normal panel remains fully standalone. If the local v0.10.0 device bridge is
 running, the bottom of the panel shows the paired device name and a green
 connection indicator. **Allow command center** controls whether that device may
 accept central inspection, live-fleet, and stop commands.
@@ -20,7 +20,7 @@ pending managed command, the controller records a local override and withdraws
 the central run instead of silently allowing two executors.
 
 The Command Center can configure the event password and release time for any
-selected group of 1–20 devices. Each selected device receives its own one-use
+selected group of 1–20 approved devices. Each selected device receives its own one-use
 execution lease; unselected devices do nothing. Its browser encrypts the
 password separately with each device's public key, and only that device's local
 bridge decrypts it. The controller never receives a readable password. POSH

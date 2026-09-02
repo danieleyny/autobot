@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { audit, ensureControlSchema, nowMs, parseJson, randomToken, sha256 } from "../../../db/control";
 import { getD1 } from "../../../db";
 
-type DeviceAuth = { id: string; owner_id: string; name: string };
+type DeviceAuth = { id: string; owner_id: string; name: string; approval_status: "pending" | "approved" };
 
 function optionalPublicKey(value: unknown): string | null {
   if (value === undefined || value === null || value === "") return null;
@@ -28,7 +28,7 @@ async function authenticateDevice(request: NextRequest): Promise<DeviceAuth | nu
   if (!token) return null;
   const tokenHash = await sha256(token);
   return getD1()
-    .prepare("SELECT id, owner_id, name FROM devices WHERE token_hash = ? LIMIT 1")
+    .prepare("SELECT id, owner_id, name, approval_status FROM devices WHERE token_hash = ? LIMIT 1")
     .bind(tokenHash)
     .first<DeviceAuth>();
 }
@@ -76,19 +76,32 @@ export async function POST(request: NextRequest) {
       const codeHash = await sha256(code);
       const pairing = await getD1()
         .prepare(
-          `SELECT owner_id, label, expires_at, used_at FROM pairing_codes
+          `SELECT owner_id, label, expires_at, max_uses, used_count, approval_required FROM pairing_codes
            WHERE code_hash = ? LIMIT 1`,
         )
         .bind(codeHash)
-        .first<{ owner_id: string; label: string; expires_at: number; used_at: number | null }>();
-      if (!pairing || pairing.used_at || pairing.expires_at < nowMs()) {
-        return jsonError("Pairing code is invalid, expired, or already used.", 401);
+        .first<{
+          owner_id: string;
+          label: string;
+          expires_at: number;
+          max_uses: number;
+          used_count: number;
+          approval_required: number;
+        }>();
+      const timestamp = nowMs();
+      if (!pairing || pairing.used_count >= pairing.max_uses || pairing.expires_at < timestamp) {
+        return jsonError("Pairing code is invalid, expired, or full.", 401);
       }
       const claimed = await getD1()
-        .prepare("UPDATE pairing_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL")
-        .bind(nowMs(), codeHash)
+        .prepare(
+          `UPDATE pairing_codes
+           SET used_count = used_count + 1,
+               used_at = CASE WHEN used_count + 1 >= max_uses THEN ? ELSE used_at END
+           WHERE code_hash = ? AND expires_at >= ? AND used_count < max_uses`,
+        )
+        .bind(timestamp, codeHash, timestamp)
         .run();
-      if (!claimed.meta.changes) return jsonError("Pairing code was already used.", 409);
+      if (!claimed.meta.changes) return jsonError("Pairing code was already used or is full.", 409);
 
       const deviceId = crypto.randomUUID();
       const token = randomToken();
@@ -98,22 +111,24 @@ export async function POST(request: NextRequest) {
       const version =
         typeof body.version === "string" && body.version.trim() ? body.version.trim().slice(0, 32) : "unknown";
       const publicKey = optionalPublicKey(body.publicKey);
+      const approvalStatus = pairing.approval_required ? "pending" : "approved";
       await getD1()
         .prepare(
           `INSERT INTO devices
-           (id, owner_id, name, token_hash, public_key, version, mode, state_json, last_seen_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'local', '{}', NULL, ?)`,
+           (id, owner_id, name, token_hash, public_key, version, mode, approval_status,
+            state_json, last_seen_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'local', ?, '{}', NULL, ?)`,
         )
-        .bind(deviceId, pairing.owner_id, name, tokenHash, publicKey, version, nowMs())
+        .bind(deviceId, pairing.owner_id, name, tokenHash, publicKey, version, approvalStatus, timestamp)
         .run();
       await audit({
         ownerId: pairing.owner_id,
         deviceId,
         source: "device",
         action: "device-paired",
-        detail: { name, version },
+        detail: { name, version, approvalStatus },
       });
-      return NextResponse.json({ deviceId, token, name });
+      return NextResponse.json({ approvalStatus, deviceId, token, name });
     }
 
     const device = await authenticateDevice(request);
@@ -135,6 +150,10 @@ export async function POST(request: NextRequest) {
         )
         .bind(version, mode, JSON.stringify(status), timestamp, publicKey, device.id)
         .run();
+
+      if (device.approval_status !== "approved") {
+        return NextResponse.json({ approvalPending: true, serverTime: timestamp, command: null });
+      }
 
       const command = await getD1()
         .prepare(
@@ -180,6 +199,10 @@ export async function POST(request: NextRequest) {
         });
       }
       return NextResponse.json({ serverTime: timestamp, command: null });
+    }
+
+    if (device.approval_status !== "approved") {
+      return jsonError("This laptop is waiting for Command Center approval.", 403);
     }
 
     if (body.action === "report") {

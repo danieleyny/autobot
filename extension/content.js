@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.9.0";
+  const VERSION = "0.10.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -78,7 +78,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.9.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.10.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -291,7 +291,9 @@
     const connected = Boolean(result?.connected);
     controlDot.classList.toggle("online", connected);
     controlStatus.textContent = connected
-      ? `${result.deviceName || "Device"} · ${allowControl.checked ? "managed + local" : "standalone"}`
+      ? result.approvalPending
+        ? `${result.deviceName || "Device"} · awaiting approval`
+        : `${result.deviceName || "Device"} · ${allowControl.checked ? "managed + local" : "standalone"}`
       : "Standalone · bridge offline";
     if (connected && allowControl.checked && result.command) {
       await handleControlCommand(result.command).catch((error) => {

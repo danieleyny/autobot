@@ -21,7 +21,7 @@ export default async function LoginPage() {
           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#b8ff5a]">System locked</p>
           <h2 className="mt-2 text-3xl font-semibold tracking-tight">Enter your PIN</h2>
           <p className="mt-3 text-sm leading-6 text-[#b8c0b8]">
-            This dashboard controls paired AUTOBOT devices. Access expires automatically after 12 hours.
+            This dashboard controls paired AUTOBOT devices. Access expires automatically after 24 hours.
           </p>
           <PinLoginForm />
         </div>

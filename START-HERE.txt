@@ -1,4 +1,4 @@
-AUTOBOT v0.9.0 — SECOND COMPUTER QUICK START
+AUTOBOT v0.10.0 — SECOND COMPUTER QUICK START
 ==============================================
 
 WHAT YOU NEED
@@ -6,7 +6,7 @@ WHAT YOU NEED
 - Google Chrome
 - Node.js LTS from https://nodejs.org
 - Permission to enable Chrome Developer mode
-- A one-time pairing code from the AUTOBOT Command Center
+- An enrollment or one-time code from the AUTOBOT Command Center
 
 
 1. DOWNLOAD AND EXTRACT
@@ -14,7 +14,34 @@ WHAT YOU NEED
 On GitHub, click Code, then Download ZIP. Double-click the ZIP to extract it.
 
 
-2. OPEN A TERMINAL IN THE AUTOBOT FOLDER
+2. CREATE AN ENROLLMENT CODE
+
+- Open https://autobot-command-center.avgschnook.chatgpt.site
+- Enter the dashboard PIN provided by the owner.
+- Start a two-hour enrollment for the planned number of laptops, or create a
+  one-time code.
+
+An enrollment code works for the selected number of laptops for two hours.
+Each enrolled laptop must be approved in the dashboard. A one-time code still
+works once and expires after ten minutes.
+
+
+3. RUN THE SETUP ASSISTANT
+
+Windows:
+- Double-click SETUP-WINDOWS.cmd.
+
+Mac:
+- Double-click SETUP-MAC.command.
+
+The assistant installs AUTOBOT, asks for the code and laptop name, registers
+automatic startup, and starts the device bridge.
+
+If you used the assistant, skip manual steps 4, 6, and 7 below. Complete step 5
+to load the extension, then continue with step 8.
+
+
+MANUAL ALTERNATIVE — OPEN A TERMINAL IN THE AUTOBOT FOLDER
 
 Windows:
 - Open the extracted autobot folder.
@@ -25,30 +52,20 @@ Mac:
 - Drag the extracted autobot folder into Terminal and press Enter.
 
 
-3. INSTALL
+4. INSTALL
 
 Run:
 
   npm install
 
 
-4. LOAD THE CHROME EXTENSION
+5. LOAD THE CHROME EXTENSION
 
 - Open chrome://extensions
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.9.0 appears.
-
-
-5. CREATE A PAIRING CODE
-
-- Open https://autobot-command-center.avgschnook.chatgpt.site
-- Enter the dashboard PIN provided by the owner.
-- Under Pair another device, use a name such as Friend Laptop.
-- Click Create pairing code.
-
-The code works once and expires after ten minutes.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.10.0 appears.
 
 
 6. PAIR THE COMPUTER
@@ -75,8 +92,9 @@ Keep this terminal open during the test.
 - Open the organizer-owned test event and refresh once.
 - Find the AUTOBOT panel in the lower-right corner.
 - Leave Allow command center checked.
+- Approve Friend Laptop in the dashboard.
 - Confirm Friend Laptop appears online in the dashboard.
-- Run Inspection first. Inspection does not select or submit an RSVP.
+- Run a Rehearsal first. Rehearsal does not select or submit an RSVP.
 - For a live test, the owner selects only the laptops participating that day.
   Each selected laptop receives one independent, one-use execution lease.
 

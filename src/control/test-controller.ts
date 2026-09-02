@@ -75,21 +75,21 @@ async function jsonRequest(
   return body;
 }
 
-async function pairDevice(cookie: string, name: string) {
+async function claimDevice(code: string, name: string) {
   const keys = generateDeviceKeyPair();
-  const pairing = await jsonRequest(
-    "/api/control",
-    { action: "create-pairing", label: name },
-    { cookie },
-  );
   const device = await jsonRequest("/api/device", {
     action: "pair",
-    code: pairing.code,
+    code,
     name,
-    version: "0.9.0-test",
+    version: "0.10.0-test",
     publicKey: keys.publicKeyPem,
   });
-  return { id: String(device.deviceId), token: String(device.token), keys };
+  return {
+    approvalStatus: String(device.approvalStatus),
+    id: String(device.deviceId),
+    token: String(device.token),
+    keys,
+  };
 }
 
 async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Classroom Test Drop") {
@@ -97,7 +97,7 @@ async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Cl
     "/api/device",
     {
       action: "poll",
-      version: "0.9.0-test",
+      version: "0.10.0-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -144,8 +144,37 @@ try {
   }
   assert.ok(cookie, "The test PIN did not issue a dashboard session.");
   const eventTitle = `AUTOBOT Lease Test ${crypto.randomUUID().slice(0, 8)}`;
-  const executorOne = await pairDevice(cookie, `Executor One ${crypto.randomUUID().slice(0, 8)}`);
-  const executorTwo = await pairDevice(cookie, `Executor Two ${crypto.randomUUID().slice(0, 8)}`);
+  const enrollment = await jsonRequest(
+    "/api/control",
+    { action: "create-enrollment", label: "Controller test fleet", maxDevices: 2 },
+    { cookie },
+  );
+  const executorOne = await claimDevice(String(enrollment.code), `Executor One ${crypto.randomUUID().slice(0, 8)}`);
+  const executorTwo = await claimDevice(String(enrollment.code), `Executor Two ${crypto.randomUUID().slice(0, 8)}`);
+  assert.equal(executorOne.approvalStatus, "pending");
+  assert.equal(executorTwo.approvalStatus, "pending");
+  const pendingPoll = await poll(executorOne.token, executorOne.keys, eventTitle);
+  assert.equal(pendingPoll.approvalPending, true);
+  assert.equal(pendingPoll.command, null);
+  await jsonRequest(
+    "/api/device",
+    { action: "report", phase: "status" },
+    { token: executorOne.token, expectedStatus: 403 },
+  );
+  const rejectedKeys = generateDeviceKeyPair();
+  await jsonRequest(
+    "/api/device",
+    {
+      action: "pair",
+      code: enrollment.code,
+      name: "Over capacity",
+      version: "0.10.0-test",
+      publicKey: rejectedKeys.publicKeyPem,
+    },
+    { expectedStatus: 401 },
+  );
+  await jsonRequest("/api/control", { action: "approve-device", deviceId: executorOne.id }, { cookie });
+  await jsonRequest("/api/control", { action: "approve-device", deviceId: executorTwo.id }, { cookie });
   await poll(executorOne.token, executorOne.keys, eventTitle);
   await poll(executorTwo.token, executorTwo.keys, eventTitle);
 
@@ -270,7 +299,7 @@ try {
   );
   const afterRemoval = await jsonRequest("/api/control", null, { cookie });
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
-  console.log("Control integration passed: encrypted two-device fleet, two independent leases, reliable redelivery, and device revocation.");
+  console.log("Control integration passed: batch enrollment approval, capacity limit, encrypted two-device fleet, reliable redelivery, results, and revocation.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }

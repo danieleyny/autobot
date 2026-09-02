@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 export const PIN_SESSION_COOKIE = "autobot_pin_session";
 export const CONTROLLER_OWNER_ID = "autobot-primary-controller";
 
-const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
+const SESSION_LIFETIME_SECONDS = 24 * 60 * 60;
 const PIN_HASH_VERSION = "pbkdf2-sha256";
 
 type RuntimeSecrets = {

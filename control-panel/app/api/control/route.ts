@@ -14,6 +14,7 @@ type DeviceRow = {
   name: string;
   version: string;
   mode: "local" | "managed";
+  approval_status: "pending" | "approved";
   state_json: string;
   public_key: string | null;
   last_seen_at: number | null;
@@ -84,7 +85,7 @@ function supportsFleetExecution(version: string): boolean {
   if (!match) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major > 0 || minor >= 9;
+  return major > 0 || minor >= 10;
 }
 
 async function queueCommand(input: {
@@ -117,9 +118,9 @@ export async function GET() {
   if (!user) return jsonError("A valid dashboard PIN session is required.", 401);
   await ensureControlSchema();
   const db = getD1();
-  const [deviceResult, runResult, auditResult, leaseResult] = await db.batch([
+  const [deviceResult, runResult, auditResult, leaseResult, runDeviceResult] = await db.batch([
     db.prepare(
-      `SELECT id, name, version, mode, state_json, public_key, last_seen_at, created_at
+      `SELECT id, name, version, mode, approval_status, state_json, public_key, last_seen_at, created_at
        FROM devices WHERE owner_id = ? ORDER BY created_at ASC`,
     ).bind(user.userId),
     db.prepare(
@@ -135,6 +136,15 @@ export async function GET() {
       `SELECT id, run_id, device_id, status, created_at, activated_at, completed_at
        FROM leases WHERE owner_id = ? ORDER BY created_at DESC LIMIT 100`,
     ).bind(user.userId),
+    db.prepare(
+      `SELECT run_devices.run_id, run_devices.device_id, run_devices.role, run_devices.status,
+              devices.name AS device_name, runs.updated_at
+       FROM run_devices
+       JOIN devices ON devices.id = run_devices.device_id
+       JOIN runs ON runs.id = run_devices.run_id
+       WHERE runs.owner_id = ?
+       ORDER BY runs.updated_at DESC, devices.name ASC LIMIT 240`,
+    ).bind(user.userId),
   ]);
 
   const onlineCutoff = nowMs() - 7_500;
@@ -143,6 +153,7 @@ export async function GET() {
     name: device.name,
     version: device.version,
     mode: device.mode,
+    approvalStatus: device.approval_status,
     state: parseJson<Record<string, unknown>>(device.state_json, {}),
     encryptionPublicKey: device.public_key,
     encryptionReady: Boolean(device.public_key),
@@ -175,6 +186,7 @@ export async function GET() {
     devices,
     runs,
     leases: leaseResult.results,
+    runDevices: runDeviceResult.results,
     events,
     serverTime: nowMs(),
   });
@@ -203,8 +215,10 @@ export async function POST(request: NextRequest) {
         const expiresAt = createdAt + 10 * 60_000;
         await getD1()
           .prepare(
-            `INSERT INTO pairing_codes (code_hash, owner_id, label, expires_at, used_at, created_at)
-             VALUES (?, ?, ?, ?, NULL, ?)`,
+            `INSERT INTO pairing_codes
+             (code_hash, owner_id, label, expires_at, used_at, max_uses, used_count,
+              approval_required, created_at)
+             VALUES (?, ?, ?, ?, NULL, 1, 0, 0, ?)`,
           )
           .bind(codeHash, user.userId, label, expiresAt, createdAt)
           .run();
@@ -215,6 +229,50 @@ export async function POST(request: NextRequest) {
           detail: { label, expiresAt },
         });
         return NextResponse.json({ code, expiresAt });
+      }
+
+      case "create-enrollment": {
+        const label = nonEmpty(body.label, "Enrollment label").slice(0, 80);
+        const maxUses = Math.min(20, Math.max(1, Math.trunc(Number(body.maxDevices) || 20)));
+        const code = randomPairingCode();
+        const codeHash = await sha256(code);
+        const createdAt = nowMs();
+        const expiresAt = createdAt + 2 * 60 * 60_000;
+        await getD1()
+          .prepare(
+            `INSERT INTO pairing_codes
+             (code_hash, owner_id, label, expires_at, used_at, max_uses, used_count,
+              approval_required, created_at)
+             VALUES (?, ?, ?, ?, NULL, ?, 0, 1, ?)`,
+          )
+          .bind(codeHash, user.userId, label, expiresAt, maxUses, createdAt)
+          .run();
+        await audit({
+          ownerId: user.userId,
+          source: "control",
+          action: "enrollment-window-created",
+          detail: { label, maxUses, expiresAt },
+        });
+        return NextResponse.json({ code, expiresAt, maxDevices: maxUses });
+      }
+
+      case "approve-device": {
+        const deviceId = nonEmpty(body.deviceId, "Device ID");
+        const approved = await getD1()
+          .prepare(
+            `UPDATE devices SET approval_status = 'approved'
+             WHERE id = ? AND owner_id = ? AND approval_status = 'pending'`,
+          )
+          .bind(deviceId, user.userId)
+          .run();
+        if (!approved.meta.changes) throw new Error("Pending device not found.");
+        await audit({
+          ownerId: user.userId,
+          deviceId,
+          source: "control",
+          action: "device-approved",
+        });
+        return NextResponse.json({ ok: true });
       }
 
       case "remove-device": {
@@ -324,16 +382,26 @@ export async function POST(request: NextRequest) {
         const placeholders = selectedIds.map(() => "?").join(",");
         const deviceRows = await getD1()
           .prepare(
-            `SELECT id, version, last_seen_at, state_json, public_key FROM devices
+            `SELECT id, version, approval_status, last_seen_at, state_json, public_key FROM devices
              WHERE owner_id = ? AND id IN (${placeholders})`,
           )
           .bind(user.userId, ...selectedIds)
-          .all<{ id: string; version: string; last_seen_at: number | null; state_json: string; public_key: string | null }>();
+          .all<{
+            id: string;
+            version: string;
+            approval_status: string;
+            last_seen_at: number | null;
+            state_json: string;
+            public_key: string | null;
+          }>();
         if (deviceRows.results.length !== selectedIds.length) throw new Error("One or more devices do not belong to this controller.");
         const deviceStates = deviceRows.results.map((device) => ({
           ...device,
           state: parseJson<Record<string, unknown>>(device.state_json, {}),
         }));
+        if (deviceStates.some((device) => device.approval_status !== "approved")) {
+          throw new Error("Approve every selected device before arming.");
+        }
         if (deviceStates.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
           throw new Error("Every selected device must be online before arming.");
         }
@@ -347,7 +415,7 @@ export async function POST(request: NextRequest) {
           throw new Error("Every selected device must show the configured event title before arming.");
         }
         if (run.mode === "live" && deviceStates.some((device) => !supportsFleetExecution(device.version))) {
-          throw new Error("Every selected device must run AUTOBOT v0.9.0 or newer for a live fleet test.");
+          throw new Error("Every selected device must run AUTOBOT v0.10.0 or newer for a live fleet test.");
         }
 
         const encryptedSecrets =
