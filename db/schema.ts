@@ -64,7 +64,7 @@ export const runDevices = sqliteTable(
   {
     runId: text("run_id").notNull(),
     deviceId: text("device_id").notNull(),
-    role: text("role", { enum: ["primary", "standby", "inspection"] }).notNull(),
+    role: text("role", { enum: ["executor", "inspection"] }).notNull(),
     status: text("status").notNull().default("pending"),
   },
   (table) => [
@@ -107,7 +107,7 @@ export const leases = sqliteTable(
     completedAt: integer("completed_at"),
   },
   (table) => [
-    uniqueIndex("idx_leases_run").on(table.runId),
+    uniqueIndex("idx_leases_run_device").on(table.runId, table.deviceId),
     index("idx_leases_device_status").on(table.deviceId, table.status),
   ],
 );

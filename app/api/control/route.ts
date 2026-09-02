@@ -62,6 +62,31 @@ function validateEventUrl(value: unknown): string {
   return url.toString();
 }
 
+function sameEventPage(left: unknown, right: unknown): boolean {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  try {
+    const leftUrl = new URL(left);
+    const rightUrl = new URL(right);
+    return leftUrl.hostname === rightUrl.hostname && leftUrl.pathname === rightUrl.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function sameEventTitle(left: unknown, right: unknown): boolean {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  return normalize(left) === normalize(right);
+}
+
+function supportsFleetExecution(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\./.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || minor >= 9;
+}
+
 async function queueCommand(input: {
   ownerId: string;
   deviceId: string;
@@ -108,7 +133,7 @@ export async function GET() {
     ).bind(user.userId),
     db.prepare(
       `SELECT id, run_id, device_id, status, created_at, activated_at, completed_at
-       FROM leases WHERE owner_id = ? ORDER BY created_at DESC LIMIT 10`,
+       FROM leases WHERE owner_id = ? ORDER BY created_at DESC LIMIT 100`,
     ).bind(user.userId),
   ]);
 
@@ -192,6 +217,40 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ code, expiresAt });
       }
 
+      case "remove-device": {
+        const deviceId = nonEmpty(body.deviceId, "Device ID");
+        const device = await getD1()
+          .prepare("SELECT id, name FROM devices WHERE id = ? AND owner_id = ? LIMIT 1")
+          .bind(deviceId, user.userId)
+          .first<{ id: string; name: string }>();
+        if (!device) throw new Error("Device not found.");
+        const activeLink = await getD1()
+          .prepare(
+            `SELECT runs.id FROM runs
+             JOIN run_devices ON run_devices.run_id = runs.id
+             WHERE runs.owner_id = ? AND run_devices.device_id = ?
+               AND runs.status IN ('draft', 'armed', 'blocked')
+             LIMIT 1`,
+          )
+          .bind(user.userId, deviceId)
+          .first<{ id: string }>();
+        if (activeLink) throw new Error("Stop or finish the active run before removing this device.");
+        await audit({
+          ownerId: user.userId,
+          deviceId,
+          source: "control",
+          action: "device-removed",
+          detail: { name: device.name },
+        });
+        await getD1().batch([
+          getD1().prepare("DELETE FROM commands WHERE device_id = ? AND owner_id = ?").bind(deviceId, user.userId),
+          getD1().prepare("DELETE FROM leases WHERE device_id = ? AND owner_id = ?").bind(deviceId, user.userId),
+          getD1().prepare("DELETE FROM run_devices WHERE device_id = ?").bind(deviceId),
+          getD1().prepare("DELETE FROM devices WHERE id = ? AND owner_id = ?").bind(deviceId, user.userId),
+        ]);
+        return NextResponse.json({ ok: true });
+      }
+
       case "create-run": {
         const mode = body.mode === "live" ? "live" : "inspection";
         const eventTitle = nonEmpty(body.eventTitle, "Exact event title").slice(0, 200);
@@ -204,6 +263,9 @@ export async function POST(request: NextRequest) {
           : "any";
         const organizerOwned = body.organizerOwned === true;
         const permissionConfirmed = body.permissionConfirmed === true;
+        if (mode === "live" && releaseAt < nowMs() - 1_000) {
+          throw new Error("Live release time must be now or in the future.");
+        }
         if (mode === "live" && (!organizerOwned || !permissionConfirmed)) {
           throw new Error("Live mode requires organizer ownership and written test permission confirmation.");
         }
@@ -247,6 +309,7 @@ export async function POST(request: NextRequest) {
           ? [...new Set(body.deviceIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
           : [];
         if (!selectedIds.length) throw new Error("Select at least one online device.");
+        if (selectedIds.length > 20) throw new Error("A classroom fleet run supports at most 20 devices.");
         const run = await getD1()
           .prepare(
             `SELECT id, event_url, event_title, release_at, ticket_strategy, mode, status,
@@ -261,21 +324,30 @@ export async function POST(request: NextRequest) {
         const placeholders = selectedIds.map(() => "?").join(",");
         const deviceRows = await getD1()
           .prepare(
-            `SELECT id, last_seen_at, state_json, public_key FROM devices
+            `SELECT id, version, last_seen_at, state_json, public_key FROM devices
              WHERE owner_id = ? AND id IN (${placeholders})`,
           )
           .bind(user.userId, ...selectedIds)
-          .all<{ id: string; last_seen_at: number | null; state_json: string; public_key: string | null }>();
+          .all<{ id: string; version: string; last_seen_at: number | null; state_json: string; public_key: string | null }>();
         if (deviceRows.results.length !== selectedIds.length) throw new Error("One or more devices do not belong to this controller.");
-        if (deviceRows.results.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
+        const deviceStates = deviceRows.results.map((device) => ({
+          ...device,
+          state: parseJson<Record<string, unknown>>(device.state_json, {}),
+        }));
+        if (deviceStates.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
           throw new Error("Every selected device must be online before arming.");
         }
-        if (
-          deviceRows.results.some(
-            (device) => parseJson<Record<string, unknown>>(device.state_json, {}).controlConnected !== true,
-          )
-        ) {
+        if (deviceStates.some((device) => device.state.controlConnected !== true)) {
           throw new Error("Every selected device must have command-center control enabled locally.");
+        }
+        if (deviceStates.some((device) => !sameEventPage(device.state.eventUrl, run.event_url))) {
+          throw new Error("Every selected device must have the configured event page open before arming.");
+        }
+        if (deviceStates.some((device) => !sameEventTitle(device.state.eventTitle, run.event_title))) {
+          throw new Error("Every selected device must show the configured event title before arming.");
+        }
+        if (run.mode === "live" && deviceStates.some((device) => !supportsFleetExecution(device.version))) {
+          throw new Error("Every selected device must run AUTOBOT v0.9.0 or newer for a live fleet test.");
         }
 
         const encryptedSecrets =
@@ -284,7 +356,7 @@ export async function POST(request: NextRequest) {
             : {};
         const passwordIncluded = Object.keys(encryptedSecrets).length > 0;
         if (passwordIncluded) {
-          for (const device of deviceRows.results) {
+          for (const device of deviceStates) {
             if (!device.public_key) {
               throw new Error("Every selected device must show Password ready before sending an event password.");
             }
@@ -311,28 +383,37 @@ export async function POST(request: NextRequest) {
           ticketStrategy: run.ticket_strategy,
         };
         const timestamp = nowMs();
+        const db = getD1();
 
         if (run.mode === "inspection") {
-          for (const deviceId of selectedIds) {
-            await getD1()
-              .prepare(
+          const statements = selectedIds.flatMap((deviceId) => [
+            db.prepare(
                 `INSERT OR REPLACE INTO run_devices (run_id, device_id, role, status)
                  VALUES (?, ?, 'inspection', 'queued')`,
               )
-              .bind(runId, deviceId)
-              .run();
-            await queueCommand({
-              ownerId: user.userId,
+              .bind(runId, deviceId),
+            db.prepare(
+              `INSERT INTO commands
+               (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+               VALUES (?, ?, ?, ?, 'inspect', ?, 'queued', ?)`,
+            ).bind(
+              crypto.randomUUID(),
+              user.userId,
               deviceId,
               runId,
-              type: "inspect",
-              payload: {
+              JSON.stringify({
                 ...payload,
                 execute: false,
                 ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
-              },
-            });
-          }
+              }),
+              timestamp,
+            ),
+          ]);
+          statements.push(
+            db.prepare("UPDATE runs SET status = 'armed', updated_at = ? WHERE id = ? AND owner_id = ?")
+              .bind(timestamp, runId, user.userId),
+          );
+          await db.batch(statements);
         } else {
           if (!run.organizer_owned || !run.permission_confirmed) {
             throw new Error("The owned-event and written-permission confirmations are missing.");
@@ -340,57 +421,56 @@ export async function POST(request: NextRequest) {
           if (body.confirmEventTitle !== run.event_title) {
             throw new Error("Type the exact event title to confirm this live test.");
           }
-          const primaryDeviceId = nonEmpty(body.primaryDeviceId, "Primary device");
-          if (!selectedIds.includes(primaryDeviceId)) throw new Error("The primary must be a selected device.");
-          const leaseId = crypto.randomUUID();
-          await getD1()
-            .prepare(
-              `INSERT INTO leases (id, owner_id, run_id, device_id, status, created_at)
-               VALUES (?, ?, ?, ?, 'offered', ?)`,
-            )
-            .bind(leaseId, user.userId, runId, primaryDeviceId, timestamp)
-            .run();
-          for (const deviceId of selectedIds) {
-            const isPrimary = deviceId === primaryDeviceId;
-            await getD1()
-              .prepare(
-                `INSERT OR REPLACE INTO run_devices (run_id, device_id, role, status)
-                 VALUES (?, ?, ?, 'queued')`,
+          const statements = selectedIds.flatMap((deviceId) => {
+            const leaseId = crypto.randomUUID();
+            return [
+              db.prepare(
+                `INSERT INTO leases (id, owner_id, run_id, device_id, status, created_at)
+                 VALUES (?, ?, ?, ?, 'offered', ?)`,
               )
-              .bind(runId, deviceId, isPrimary ? "primary" : "standby")
-              .run();
-            await queueCommand({
-              ownerId: user.userId,
-              deviceId,
-              runId,
-              type: isPrimary ? "arm-live" : "standby",
-              payload: isPrimary
-                ? {
-                    ...payload,
-                    execute: true,
-                    leaseId,
-                    ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
-                  }
-                : {
-                    ...payload,
-                    execute: false,
-                    primaryDeviceId,
-                    ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
-                  },
-            });
-          }
+                .bind(leaseId, user.userId, runId, deviceId, timestamp),
+              db.prepare(
+                `INSERT OR REPLACE INTO run_devices (run_id, device_id, role, status)
+                 VALUES (?, ?, 'executor', 'queued')`,
+              )
+                .bind(runId, deviceId),
+              db.prepare(
+                `INSERT INTO commands
+                 (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+                 VALUES (?, ?, ?, ?, 'arm-live', ?, 'queued', ?)`,
+              ).bind(
+                crypto.randomUUID(),
+                user.userId,
+                deviceId,
+                runId,
+                JSON.stringify({
+                ...payload,
+                execute: true,
+                leaseId,
+                fleetSize: selectedIds.length,
+                ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
+                }),
+                timestamp,
+              ),
+            ];
+          });
+          statements.push(
+            db.prepare("UPDATE runs SET status = 'armed', updated_at = ? WHERE id = ? AND owner_id = ?")
+              .bind(timestamp, runId, user.userId),
+          );
+          await db.batch(statements);
         }
-
-        await getD1()
-          .prepare("UPDATE runs SET status = 'armed', updated_at = ? WHERE id = ? AND owner_id = ?")
-          .bind(timestamp, runId, user.userId)
-          .run();
         await audit({
           ownerId: user.userId,
           runId,
           source: "control",
           action: "run-armed",
-          detail: { mode: run.mode, devices: selectedIds.length, passwordDelivered: passwordIncluded },
+          detail: {
+            mode: run.mode,
+            devices: selectedIds.length,
+            reservationTarget: run.mode === "live" ? selectedIds.length : 0,
+            passwordDelivered: passwordIncluded,
+          },
         });
         return NextResponse.json({ ok: true });
       }

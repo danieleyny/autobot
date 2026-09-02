@@ -54,6 +54,42 @@ const emptyState: ControlState = {
   serverTime: Date.now(),
 };
 
+const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
+
+function supportsFleetExecution(version: string) {
+  const match = /^(\d+)\.(\d+)\./.exec(version);
+  if (!match) return false;
+  return Number(match[1]) > 0 || Number(match[2]) >= 9;
+}
+
+function sameEventPage(left: unknown, right: string) {
+  if (typeof left !== "string") return false;
+  try {
+    const leftUrl = new URL(left);
+    const rightUrl = new URL(right);
+    return leftUrl.hostname === rightUrl.hostname && leftUrl.pathname === rightUrl.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
+  if (!device.online) return "Offline";
+  if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
+  if (!supportsFleetExecution(device.version)) return "Update to v0.9.0";
+  if (!device.encryptionReady) return "Password security not ready";
+  if (device.state.pageReady !== true) return "Open the event page";
+  if (!sameEventPage(device.state.eventUrl, eventUrl)) return "Wrong event page";
+  if (
+    typeof device.state.eventTitle !== "string" ||
+    device.state.eventTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase() !==
+      eventTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase()
+  ) {
+    return "Wrong event title";
+  }
+  return null;
+}
+
 async function encryptEventPassword(password: string, publicKeyPem: string): Promise<string> {
   const encodedKey = publicKeyPem
     .replace("-----BEGIN PUBLIC KEY-----", "")
@@ -106,7 +142,6 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [organizerOwned, setOrganizerOwned] = useState(false);
   const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [liveConfirmation, setLiveConfirmation] = useState("");
-  const [primaryDeviceId, setPrimaryDeviceId] = useState("");
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -137,13 +172,30 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(EVENT_PROFILE_KEY) || "null") as {
+          eventUrl?: string;
+          eventTitle?: string;
+          ticketStrategy?: "any" | "first" | "second";
+        } | null;
+        if (saved?.eventUrl) setEventUrl(saved.eventUrl);
+        if (saved?.eventTitle) setEventTitle(saved.eventTitle);
+        if (saved?.ticketStrategy) setTicketStrategy(saved.ticketStrategy);
+      } catch {
+        // Ignore invalid device-local preferences.
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const activeRun = state.runs.find((run) => ["draft", "armed", "blocked"].includes(run.status));
   const onlineDevices = state.devices.filter((device) => device.online);
-  const activeLease = state.leases.find((lease) => ["offered", "active"].includes(String(lease.status)));
-
-  const resolvedPrimaryDeviceId = selected.includes(primaryDeviceId)
-    ? primaryDeviceId
-    : selected[0] ?? "";
+  const activeLeases = state.leases.filter((lease) => ["offered", "active"].includes(String(lease.status)));
+  const selectedIdSet = new Set(selected);
+  const selectedDevices = state.devices.filter((device) => selectedIdSet.has(device.id));
+  const readySelectedDevices = selectedDevices.filter((device) => !readinessIssue(device, eventUrl, eventTitle));
 
   const post = async (payload: Record<string, unknown>) => {
     const response = await fetch("/api/control", {
@@ -175,12 +227,72 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
   };
 
+  const removeDevice = async (device: Device) => {
+    if (!window.confirm(`Remove ${device.name} from this controller? Its saved pairing will stop working.`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "remove-device", deviceId: device.id });
+      setSelected((current) => current.filter((id) => id !== device.id));
+      setNotice(`${device.name} was removed. Delete AUTOBOT from that computer before returning it.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useOpenEvent = () => {
+    const candidates = selectedDevices
+      .map((device) => ({
+        url: typeof device.state.eventUrl === "string" ? device.state.eventUrl : "",
+        title: typeof device.state.eventTitle === "string" ? device.state.eventTitle : "",
+      }))
+      .filter((event) => event.url);
+    if (!candidates.length) {
+      setNotice("Select an online device with the POSH event page open first.");
+      return;
+    }
+    if (candidates.some((event) => !sameEventPage(event.url, candidates[0]!.url))) {
+      setNotice("The selected devices are not all on the same event page.");
+      return;
+    }
+    setEventUrl(candidates[0]!.url);
+    if (candidates[0]!.title) setEventTitle(candidates[0]!.title);
+    setNotice(`Captured the open event from ${candidates.length} selected device${candidates.length === 1 ? "" : "s"}.`);
+  };
+
+  const saveEventDetails = () => {
+    try {
+      window.localStorage.setItem(EVENT_PROFILE_KEY, JSON.stringify({ eventUrl, eventTitle, ticketStrategy }));
+      setNotice("Event details saved in this dashboard browser. Password and release time were not saved.");
+    } catch {
+      setNotice("This browser blocked local event-detail storage. The current form still works for this session.");
+    }
+  };
+
   const launchRun = async () => {
     if (!selected.length) {
       setNotice("Select at least one online device first.");
       return;
     }
-    const selectedDevices = state.devices.filter((device) => selected.includes(device.id));
+    if (selected.length > 20) {
+      setNotice("Select no more than 20 devices for this classroom fleet test.");
+      return;
+    }
+    if (mode === "live" && !releaseAt) {
+      setNotice("Set the live release time before activating the fleet.");
+      return;
+    }
+    if (mode === "live" && readySelectedDevices.length !== selectedDevices.length) {
+      const notReady = selectedDevices
+        .filter((device) => readinessIssue(device, eventUrl, eventTitle))
+        .map((device) => `${device.name}: ${readinessIssue(device, eventUrl, eventTitle)}`)
+        .join("; ");
+      setNotice(`Fleet preflight is incomplete. ${notReady}`);
+      return;
+    }
     if (eventPassword && selectedDevices.some((device) => !device.encryptionPublicKey)) {
       setNotice("Every selected device must show Password ready. Update and restart the bridge on any device that needs the security update.");
       return;
@@ -213,7 +325,6 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         action: "arm-run",
         runId: created.id,
         deviceIds: selected,
-        primaryDeviceId: resolvedPrimaryDeviceId,
         confirmEventTitle: liveConfirmation,
         encryptedSecrets,
       });
@@ -221,7 +332,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       setNotice(
         mode === "inspection"
           ? `Inspection and setup sent to ${selected.length} device${selected.length === 1 ? "" : "s"}.`
-          : "Fleet activated. Every selected device received the setup; only the primary received an execution lease.",
+          : `Fleet activated. ${selected.length} device${selected.length === 1 ? " has" : "s have"} one independent execution lease each.`,
       );
       await refresh();
     } catch (error) {
@@ -249,8 +360,22 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   };
 
   const toggleDevice = (id: string) => {
+    if (!selected.includes(id) && selected.length >= 20) {
+      setNotice("The classroom fleet is capped at 20 selected devices.");
+      return;
+    }
     setSelected((current) =>
       current.includes(id) ? current.filter((deviceId) => deviceId !== id) : [...current, id],
+    );
+  };
+
+  const selectOnlineDevices = () => {
+    const next = onlineDevices.slice(0, 20).map((device) => device.id);
+    setSelected(next);
+    setNotice(
+      next.length
+        ? `Selected ${next.length} online device${next.length === 1 ? "" : "s"}.`
+        : "No devices are online yet.",
     );
   };
 
@@ -290,7 +415,8 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
             <span className="rounded-full bg-[#eaf4d9] px-3 py-1.5 text-[#35511e]">{onlineDevices.length} online</span>
             <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{selected.length} selected</span>
-            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{activeLease ? "1 live lease" : "No live lease"}</span>
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{readySelectedDevices.length}/{selected.length} ready</span>
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{activeLeases.length ? `${activeLeases.length} live lease${activeLeases.length === 1 ? "" : "s"}` : "No live leases"}</span>
           </div>
         </div>
       </section>
@@ -311,44 +437,77 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
             <span className="text-xs font-semibold text-[#69736b]">{loading ? "Loading…" : `${state.devices.length} paired`}</span>
           </div>
 
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={selectOnlineDevices}
+              className="flex-1 rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
+            >
+              Select online (max 20)
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelected([])}
+              className="rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
+            >
+              Clear
+            </button>
+          </div>
+
           <div className="space-y-3">
             {state.devices.length === 0 && !loading ? (
               <div className="rounded-2xl border border-dashed border-[#b8c0b5] bg-white p-5 text-sm leading-6 text-[#657066]">
                 No devices are paired yet. Create a one-time code below, then run the device bridge on that computer.
               </div>
             ) : (
-              state.devices.map((device) => (
-                <button
-                  key={device.id}
-                  type="button"
-                  onClick={() => device.online && toggleDevice(device.id)}
-                  className={`w-full rounded-2xl border bg-white p-4 text-left shadow-[0_1px_1px_rgb(23_32_24/3%)] transition ${
-                    selected.includes(device.id)
-                      ? "border-[#8bae62] ring-2 ring-[#b8ff5a]/35"
-                      : "border-[#d7dcd3]"
-                  } ${device.online ? "" : "opacity-60"}`}
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex gap-3">
-                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf0e9] font-mono text-xs font-black text-[#4a554c]">
-                        {device.name.split(" ").map((part) => part[0]).join("").slice(0, 3)}
-                      </span>
-                      <div>
-                        <h3 className="font-semibold">{device.name}</h3>
-                        <p className="mt-0.5 text-xs text-[#6b746c]">{device.mode === "managed" ? "Controller connected" : "Standalone/local"}</p>
+              state.devices.map((device) => {
+                const issue = readinessIssue(device, eventUrl, eventTitle);
+                return (
+                  <div
+                    key={device.id}
+                    className={`overflow-hidden rounded-2xl border bg-white shadow-[0_1px_1px_rgb(23_32_24/3%)] transition ${
+                      selectedIdSet.has(device.id)
+                        ? "border-[#8bae62] ring-2 ring-[#b8ff5a]/35"
+                        : "border-[#d7dcd3]"
+                    } ${device.online ? "" : "opacity-60"}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => device.online && toggleDevice(device.id)}
+                      className="w-full p-4 text-left"
+                      aria-pressed={selectedIdSet.has(device.id)}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex gap-3">
+                          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf0e9] font-mono text-xs font-black text-[#4a554c]">
+                            {device.name.split(" ").map((part) => part[0]).join("").slice(0, 3)}
+                          </span>
+                          <div>
+                            <h3 className="font-semibold">{device.name}</h3>
+                            <p className="mt-0.5 text-xs text-[#6b746c]">{device.mode === "managed" ? "Controller connected" : "Standalone/local"}</p>
+                          </div>
+                        </div>
+                        <span className={`device-dot ${device.online ? "ready" : "local"}`} />
                       </div>
-                    </div>
-                    <span className={`device-dot ${device.online ? "ready" : "local"}`} />
+                      <div className="mt-4 flex items-center justify-between border-t border-[#edf0e9] pt-3 text-xs">
+                        <span className="font-mono text-[#6b746c]">{device.version}</span>
+                        <span className="font-semibold text-[#3e493f]">{deviceSummary(device)}</span>
+                      </div>
+                      <p className={`mt-2 text-[11px] font-semibold ${issue ? "text-[#9b5f24]" : "text-[#4d6a31]"}`}>
+                        {issue || "Ready for fleet test"}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => removeDevice(device)}
+                      className="w-full border-t border-[#edf0e9] px-4 py-2 text-left text-[11px] font-semibold text-[#7c5248] hover:bg-[#fff7f4] disabled:opacity-40"
+                    >
+                      Remove and revoke
+                    </button>
                   </div>
-                  <div className="mt-4 flex items-center justify-between border-t border-[#edf0e9] pt-3 text-xs">
-                    <span className="font-mono text-[#6b746c]">{device.version}</span>
-                    <span className="font-semibold text-[#3e493f]">{deviceSummary(device)}</span>
-                  </div>
-                  <p className={`mt-2 text-[11px] font-semibold ${device.encryptionReady ? "text-[#4d6a31]" : "text-[#9b5f24]"}`}>
-                    {device.encryptionReady ? "Password ready" : "Security update required"}
-                  </p>
-                </button>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -381,7 +540,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   <p className="eyebrow">Run configuration</p>
                   <h2 className="mt-1 text-2xl font-semibold tracking-tight">Prepare the fleet</h2>
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-[#69736b]">
-                    Inspection can run everywhere. Live mode issues a single lease to the primary and leaves every other selected device on standby.
+                    Select any number from 1–20. In live mode, every selected laptop receives one independent, one-use execution lease.
                   </p>
                 </div>
                 <div className="flex rounded-full border border-[#cbd2c7] bg-[#f3f5ef] p-1 text-xs font-bold">
@@ -399,6 +558,22 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   <span>Exact event title</span>
                   <input value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} />
                 </label>
+                <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={useOpenEvent}
+                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f]"
+                  >
+                    Use event open on selected devices
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveEventDetails}
+                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f]"
+                  >
+                    Save event details
+                  </button>
+                </div>
                 <label className="field sm:col-span-2">
                   <span>Event password (optional)</span>
                   <input
@@ -427,16 +602,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 </label>
                 {mode === "live" && (
                   <>
-                    <label className="field">
-                      <span>Primary executor</span>
-                      <select value={resolvedPrimaryDeviceId} onChange={(event) => setPrimaryDeviceId(event.target.value)}>
-                        <option value="">Select primary</option>
-                        {state.devices.filter((device) => selected.includes(device.id)).map((device) => (
-                          <option key={device.id} value={device.id}>{device.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="field">
+                    <label className="field sm:col-span-2">
                       <span>Type the exact event title to confirm</span>
                       <input value={liveConfirmation} onChange={(event) => setLiveConfirmation(event.target.value)} />
                     </label>
@@ -457,13 +623,24 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 <p className="mt-1 text-xs leading-5 text-[#6b746c]">
                   {mode === "inspection"
                     ? "No quantity or checkout controls are clicked on any device."
-                    : "Exactly one primary lease. Standbys receive no submit command. After execution starts, a failure blocks the run for manual review instead of failing over."}
+                    : `${selected.length || "No"} selected device${selected.length === 1 ? "" : "s"} = ${selected.length || "no"} planned reservation${selected.length === 1 ? "" : "s"}. Each account can submit at most once; no device receives a replacement lease.`}
                 </p>
               </div>
 
+              {mode === "live" && selected.length > 0 && (
+                <div className={`mt-3 rounded-xl border p-4 ${readySelectedDevices.length === selected.length ? "border-[#b9c7ac] bg-[#f8ffed]" : "border-[#e3c6a5] bg-[#fff9f1]"}`}>
+                  <p className="text-sm font-semibold">Fleet preflight: {readySelectedDevices.length}/{selected.length} ready</p>
+                  <p className="mt-1 text-xs leading-5 text-[#6b746c]">
+                    {readySelectedDevices.length === selected.length
+                      ? "Every selected device is online, updated, controller-enabled, password-ready, and on the configured event page."
+                      : "Open the event page and resolve the readiness message shown on each selected device card before activation."}
+                  </p>
+                </div>
+              )}
+
               <div className="mt-6 flex flex-wrap gap-3">
-                <button disabled={busy || Boolean(activeRun)} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
-                  {busy ? "Working…" : mode === "live" ? "Activate selected devices" : "Run inspection"}
+                <button disabled={busy || Boolean(activeRun) || selected.length === 0} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
+                  {busy ? "Working…" : mode === "live" ? `Activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run inspection"}
                 </button>
                 <button disabled={busy || !activeRun} onClick={stopAll} className="rounded-full border border-[#cbd2c7] px-5 py-3 text-sm font-bold text-[#4d594f] disabled:opacity-40">Stop active run</button>
               </div>
@@ -473,14 +650,14 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
               <p className="eyebrow text-[#aeb8af]">Safety state</p>
               <div className="mt-4 grid h-28 w-28 place-items-center rounded-full border border-[#465148] bg-[#202a22] shadow-[inset_0_0_0_8px_rgb(184_255_90/5%)]">
                 <div className="text-center">
-                  <p className="text-3xl font-semibold text-[#b8ff5a]">{activeLease ? "1" : "0"}</p>
+                  <p className="text-3xl font-semibold text-[#b8ff5a]">{activeLeases.length}</p>
                   <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#aeb8af]">leases</p>
                 </div>
               </div>
-              <h2 className="mt-5 text-xl font-semibold">{activeLease ? "One primary is authorized" : "Live execution is locked"}</h2>
+              <h2 className="mt-5 text-xl font-semibold">{activeLeases.length ? `${activeLeases.length} device${activeLeases.length === 1 ? " is" : "s are"} authorized` : "Live execution is locked"}</h2>
               <p className="mt-2 text-sm leading-6 text-[#b8c0b8]">
-                {activeLease
-                  ? "Standby devices remain blocked. A submission or stop closes this run across the fleet."
+                {activeLeases.length
+                  ? "Each active lease belongs to one selected laptop and permits no more than one reservation from that device."
                   : "No device has central permission to submit. Local device controls remain independent."}
               </p>
               <button disabled={!activeRun || busy} onClick={stopAll} className="mt-6 w-full rounded-full border border-[#515d53] px-4 py-2.5 text-sm font-bold text-[#d8ddd8] disabled:opacity-40">Emergency stop all</button>
