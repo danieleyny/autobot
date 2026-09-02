@@ -1,0 +1,1 @@
+ALTER TABLE `devices` ADD `public_key` text;

@@ -8,6 +8,7 @@ const schemaStatements = [
     owner_id TEXT NOT NULL,
     name TEXT NOT NULL,
     token_hash TEXT NOT NULL,
+    public_key TEXT,
     version TEXT NOT NULL DEFAULT 'unknown',
     mode TEXT NOT NULL DEFAULT 'local',
     state_json TEXT NOT NULL DEFAULT '{}',
@@ -101,6 +102,10 @@ export async function ensureControlSchema(): Promise<void> {
     schemaReady = db
       .batch(schemaStatements.map((statement) => db.prepare(statement)))
       .then(async () => {
+        const columns = await db.prepare("PRAGMA table_info(devices)").all<{ name: string }>();
+        if (!columns.results.some((column) => column.name === "public_key")) {
+          await db.prepare("ALTER TABLE devices ADD COLUMN public_key TEXT").run();
+        }
         await db.prepare("PRAGMA optimize").run();
       })
       .catch((error) => {

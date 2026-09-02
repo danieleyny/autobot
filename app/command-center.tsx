@@ -8,6 +8,8 @@ type Device = {
   version: string;
   mode: "local" | "managed";
   state: Record<string, unknown>;
+  encryptionPublicKey: string | null;
+  encryptionReady: boolean;
   lastSeenAt: number | null;
   online: boolean;
 };
@@ -52,6 +54,32 @@ const emptyState: ControlState = {
   serverTime: Date.now(),
 };
 
+async function encryptEventPassword(password: string, publicKeyPem: string): Promise<string> {
+  const encodedKey = publicKeyPem
+    .replace("-----BEGIN PUBLIC KEY-----", "")
+    .replace("-----END PUBLIC KEY-----", "")
+    .replace(/\s/g, "");
+  const keyBytes = Uint8Array.from(atob(encodedKey), (character) => character.charCodeAt(0));
+  const publicKey = await crypto.subtle.importKey(
+    "spki",
+    keyBytes,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["encrypt"],
+  );
+  const encodedPassword = new TextEncoder().encode(password);
+  if (encodedPassword.byteLength > 190) {
+    throw new Error("The event password is too long for secure device delivery.");
+  }
+  const encrypted = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, encodedPassword),
+  );
+  return btoa(String.fromCharCode(...encrypted))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
 function deviceSummary(device: Device) {
   const pageReady = device.state.pageReady === true;
   const armed = device.state.armed === true;
@@ -72,6 +100,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [mode, setMode] = useState<"inspection" | "live">("inspection");
   const [eventUrl, setEventUrl] = useState("https://posh.vip/e/test-release");
   const [eventTitle, setEventTitle] = useState("AUTOBOT Classroom Test Drop");
+  const [eventPassword, setEventPassword] = useState("");
   const [releaseAt, setReleaseAt] = useState("");
   const [ticketStrategy, setTicketStrategy] = useState<"any" | "first" | "second">("any");
   const [organizerOwned, setOrganizerOwned] = useState(false);
@@ -151,9 +180,24 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       setNotice("Select at least one online device first.");
       return;
     }
+    const selectedDevices = state.devices.filter((device) => selected.includes(device.id));
+    if (eventPassword && selectedDevices.some((device) => !device.encryptionPublicKey)) {
+      setNotice("Every selected device must show Password ready. Update and restart the bridge on any device that needs the security update.");
+      return;
+    }
     setBusy(true);
     setNotice("");
     try {
+      const encryptedSecrets = eventPassword
+        ? Object.fromEntries(
+            await Promise.all(
+              selectedDevices.map(async (device) => [
+                device.id,
+                await encryptEventPassword(eventPassword, device.encryptionPublicKey!),
+              ]),
+            ),
+          )
+        : {};
       const created = await post({
         action: "create-run",
         title: eventTitle,
@@ -171,11 +215,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         deviceIds: selected,
         primaryDeviceId: resolvedPrimaryDeviceId,
         confirmEventTitle: liveConfirmation,
+        encryptedSecrets,
       });
+      setEventPassword("");
       setNotice(
         mode === "inspection"
-          ? `Inspection sent to ${selected.length} device${selected.length === 1 ? "" : "s"}.`
-          : "Live run armed. Only the primary received an execution lease; all other devices are standbys.",
+          ? `Inspection and setup sent to ${selected.length} device${selected.length === 1 ? "" : "s"}.`
+          : "Fleet activated. Every selected device received the setup; only the primary received an execution lease.",
       );
       await refresh();
     } catch (error) {
@@ -298,6 +344,9 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                     <span className="font-mono text-[#6b746c]">{device.version}</span>
                     <span className="font-semibold text-[#3e493f]">{deviceSummary(device)}</span>
                   </div>
+                  <p className={`mt-2 text-[11px] font-semibold ${device.encryptionReady ? "text-[#4d6a31]" : "text-[#9b5f24]"}`}>
+                    {device.encryptionReady ? "Password ready" : "Security update required"}
+                  </p>
                 </button>
               ))
             )}
@@ -350,6 +399,20 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   <span>Exact event title</span>
                   <input value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} />
                 </label>
+                <label className="field sm:col-span-2">
+                  <span>Event password (optional)</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    maxLength={160}
+                    value={eventPassword}
+                    onChange={(event) => setEventPassword(event.target.value)}
+                    placeholder="Sent securely to every selected device"
+                  />
+                  <small className="font-normal leading-5 text-[#6b746c]">
+                    Encrypted separately for each device. The controller never receives a readable copy.
+                  </small>
+                </label>
                 <label className="field">
                   <span>Release time</span>
                   <input type="datetime-local" value={releaseAt} onChange={(event) => setReleaseAt(event.target.value)} />
@@ -400,7 +463,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
               <div className="mt-6 flex flex-wrap gap-3">
                 <button disabled={busy || Boolean(activeRun)} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
-                  {busy ? "Working…" : mode === "live" ? "Arm selected devices" : "Run inspection"}
+                  {busy ? "Working…" : mode === "live" ? "Activate selected devices" : "Run inspection"}
                 </button>
                 <button disabled={busy || !activeRun} onClick={stopAll} className="rounded-full border border-[#cbd2c7] px-5 py-3 text-sm font-bold text-[#4d594f] disabled:opacity-40">Stop active run</button>
               </div>

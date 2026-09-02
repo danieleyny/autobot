@@ -7,6 +7,7 @@ export const devices = sqliteTable(
     ownerId: text("owner_id").notNull(),
     name: text("name").notNull(),
     tokenHash: text("token_hash").notNull(),
+    publicKey: text("public_key"),
     version: text("version").notNull().default("unknown"),
     mode: text("mode", { enum: ["local", "managed"] }).notNull().default("local"),
     stateJson: text("state_json").notNull().default("{}"),

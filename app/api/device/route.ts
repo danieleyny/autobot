@@ -4,6 +4,20 @@ import { getD1 } from "../../../db";
 
 type DeviceAuth = { id: string; owner_id: string; name: string };
 
+function optionalPublicKey(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") throw new Error("Device public key must be text.");
+  const normalized = value.trim();
+  if (
+    normalized.length < 400 ||
+    normalized.length > 1_000 ||
+    !/^-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+\n-----END PUBLIC KEY-----$/.test(normalized)
+  ) {
+    throw new Error("Device public key is invalid.");
+  }
+  return `${normalized}\n`;
+}
+
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -56,13 +70,14 @@ export async function POST(request: NextRequest) {
         typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 80) : pairing.label;
       const version =
         typeof body.version === "string" && body.version.trim() ? body.version.trim().slice(0, 32) : "unknown";
+      const publicKey = optionalPublicKey(body.publicKey);
       await getD1()
         .prepare(
           `INSERT INTO devices
-           (id, owner_id, name, token_hash, version, mode, state_json, last_seen_at, created_at)
-           VALUES (?, ?, ?, ?, ?, 'local', '{}', NULL, ?)`,
+           (id, owner_id, name, token_hash, public_key, version, mode, state_json, last_seen_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'local', '{}', NULL, ?)`,
         )
-        .bind(deviceId, pairing.owner_id, name, tokenHash, version, nowMs())
+        .bind(deviceId, pairing.owner_id, name, tokenHash, publicKey, version, nowMs())
         .run();
       await audit({
         ownerId: pairing.owner_id,
@@ -81,13 +96,17 @@ export async function POST(request: NextRequest) {
       const status = body.status && typeof body.status === "object" ? body.status : {};
       const version =
         typeof body.version === "string" && body.version.trim() ? body.version.trim().slice(0, 32) : "unknown";
+      const publicKey = optionalPublicKey(body.publicKey);
       const timestamp = nowMs();
       const mode = (status as Record<string, unknown>).controlConnected === true ? "managed" : "local";
       await getD1()
         .prepare(
-          `UPDATE devices SET version = ?, mode = ?, state_json = ?, last_seen_at = ? WHERE id = ?`,
+          `UPDATE devices
+           SET version = ?, mode = ?, state_json = ?, last_seen_at = ?,
+               public_key = COALESCE(?, public_key)
+           WHERE id = ?`,
         )
-        .bind(version, mode, JSON.stringify(status), timestamp, device.id)
+        .bind(version, mode, JSON.stringify(status), timestamp, publicKey, device.id)
         .run();
 
       const command = await getD1()
