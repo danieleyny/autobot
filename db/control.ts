@@ -7,6 +7,9 @@ const schemaStatements = [
     id TEXT PRIMARY KEY,
     owner_id TEXT NOT NULL,
     name TEXT NOT NULL,
+    contact_email TEXT,
+    contact_phone TEXT,
+    description TEXT,
     token_hash TEXT NOT NULL,
     public_key TEXT,
     version TEXT NOT NULL DEFAULT 'unknown',
@@ -113,6 +116,15 @@ export async function ensureControlSchema(): Promise<void> {
         }
         if (!deviceColumns.results.some((column) => column.name === "approval_status")) {
           await db.prepare("ALTER TABLE devices ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'").run();
+        }
+        if (!deviceColumns.results.some((column) => column.name === "contact_email")) {
+          await db.prepare("ALTER TABLE devices ADD COLUMN contact_email TEXT").run();
+        }
+        if (!deviceColumns.results.some((column) => column.name === "contact_phone")) {
+          await db.prepare("ALTER TABLE devices ADD COLUMN contact_phone TEXT").run();
+        }
+        if (!deviceColumns.results.some((column) => column.name === "description")) {
+          await db.prepare("ALTER TABLE devices ADD COLUMN description TEXT").run();
         }
         const pairingColumns = await db.prepare("PRAGMA table_info(pairing_codes)").all<{ name: string }>();
         if (!pairingColumns.results.some((column) => column.name === "max_uses")) {

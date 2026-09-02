@@ -12,6 +12,9 @@ import {
 type DeviceRow = {
   id: string;
   name: string;
+  contact_email: string | null;
+  contact_phone: string | null;
+  description: string | null;
   version: string;
   mode: "local" | "managed";
   approval_status: "pending" | "approved";
@@ -85,7 +88,14 @@ function supportsFleetExecution(version: string): boolean {
   if (!match) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major > 0 || minor >= 10;
+  return major > 0 || minor >= 11;
+}
+
+function optionalText(value: unknown, label: string, maxLength: number): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") throw new Error(`${label} must be text.`);
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
 }
 
 async function queueCommand(input: {
@@ -120,7 +130,8 @@ export async function GET() {
   const db = getD1();
   const [deviceResult, runResult, auditResult, leaseResult, runDeviceResult] = await db.batch([
     db.prepare(
-      `SELECT id, name, version, mode, approval_status, state_json, public_key, last_seen_at, created_at
+      `SELECT id, name, contact_email, contact_phone, description, version, mode,
+              approval_status, state_json, public_key, last_seen_at, created_at
        FROM devices WHERE owner_id = ? ORDER BY created_at ASC`,
     ).bind(user.userId),
     db.prepare(
@@ -151,6 +162,9 @@ export async function GET() {
   const devices = (deviceResult.results as unknown as DeviceRow[]).map((device) => ({
     id: device.id,
     name: device.name,
+    contactEmail: device.contact_email,
+    contactPhone: device.contact_phone,
+    description: device.description,
     version: device.version,
     mode: device.mode,
     approvalStatus: device.approval_status,
@@ -273,6 +287,102 @@ export async function POST(request: NextRequest) {
           action: "device-approved",
         });
         return NextResponse.json({ ok: true });
+      }
+
+      case "update-device-profile": {
+        const deviceId = nonEmpty(body.deviceId, "Device ID");
+        const contactEmail = optionalText(body.contactEmail, "Email", 254);
+        const contactPhone = optionalText(body.contactPhone, "Phone", 40);
+        const description = optionalText(body.description, "Description", 200);
+        if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+          throw new Error("Enter a valid email address or leave it blank.");
+        }
+        const updated = await getD1()
+          .prepare(
+            `UPDATE devices SET contact_email = ?, contact_phone = ?, description = ?
+             WHERE id = ? AND owner_id = ?`,
+          )
+          .bind(contactEmail, contactPhone, description, deviceId, user.userId)
+          .run();
+        if (!updated.meta.changes) throw new Error("Device not found.");
+        await audit({
+          ownerId: user.userId,
+          deviceId,
+          source: "control",
+          action: "device-profile-updated",
+          detail: {
+            emailRecorded: Boolean(contactEmail),
+            phoneRecorded: Boolean(contactPhone),
+            descriptionRecorded: Boolean(description),
+          },
+        });
+        return NextResponse.json({ ok: true });
+      }
+
+      case "open-event": {
+        const eventUrl = validateEventUrl(body.eventUrl);
+        const selectedIds = Array.isArray(body.deviceIds)
+          ? [...new Set(body.deviceIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
+          : [];
+        if (!selectedIds.length) throw new Error("Select at least one online device.");
+        if (selectedIds.length > 20) throw new Error("Select no more than 20 devices.");
+        const activeRun = await getD1()
+          .prepare("SELECT id FROM runs WHERE owner_id = ? AND status IN ('draft', 'armed', 'blocked') LIMIT 1")
+          .bind(user.userId)
+          .first<{ id: string }>();
+        if (activeRun) throw new Error("Stop or finish the active run before opening a different event.");
+
+        const placeholders = selectedIds.map(() => "?").join(",");
+        const selectedDevices = await getD1()
+          .prepare(
+            `SELECT id, name, version, approval_status, last_seen_at FROM devices
+             WHERE owner_id = ? AND id IN (${placeholders})`,
+          )
+          .bind(user.userId, ...selectedIds)
+          .all<{
+            id: string;
+            name: string;
+            version: string;
+            approval_status: string;
+            last_seen_at: number | null;
+          }>();
+        if (selectedDevices.results.length !== selectedIds.length) {
+          throw new Error("One or more selected devices do not belong to this controller.");
+        }
+        if (selectedDevices.results.some((device) => device.approval_status !== "approved")) {
+          throw new Error("Approve every selected device before opening an event.");
+        }
+        if (selectedDevices.results.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
+          throw new Error("Every selected device must be online before opening an event.");
+        }
+        const needsUpdate = selectedDevices.results.filter((device) => !supportsFleetExecution(device.version));
+        if (needsUpdate.length) {
+          throw new Error(`${needsUpdate.map((device) => device.name).join(", ")} must be updated to v0.11.0.`);
+        }
+
+        const timestamp = nowMs();
+        const db = getD1();
+        await db.batch([
+          db.prepare(
+            `UPDATE commands SET status = 'acknowledged', acknowledged_at = ?
+             WHERE owner_id = ? AND device_id IN (${placeholders}) AND type = 'open-event'
+               AND status IN ('queued', 'delivered')`,
+          ).bind(timestamp, user.userId, ...selectedIds),
+          ...selectedIds.map((deviceId) =>
+            db.prepare(
+              `INSERT INTO commands
+               (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+               VALUES (?, ?, ?, NULL, 'open-event', ?, 'queued', ?)`,
+            ).bind(crypto.randomUUID(), user.userId, deviceId, JSON.stringify({ eventUrl }), timestamp),
+          ),
+        ]);
+        await audit({
+          ownerId: user.userId,
+          source: "control",
+          action: "event-open-requested",
+          detail: { devices: selectedIds.length, eventUrl },
+        });
+        return NextResponse.json({ ok: true, devices: selectedIds.length });
       }
 
       case "remove-device": {
@@ -415,7 +525,7 @@ export async function POST(request: NextRequest) {
           throw new Error("Every selected device must show the configured event title before arming.");
         }
         if (run.mode === "live" && deviceStates.some((device) => !supportsFleetExecution(device.version))) {
-          throw new Error("Every selected device must run AUTOBOT v0.10.0 or newer for a live fleet test.");
+          throw new Error("Every selected device must run AUTOBOT v0.11.0 or newer for a live fleet test.");
         }
 
         const encryptedSecrets =
