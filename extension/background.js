@@ -1,5 +1,5 @@
 const BRIDGE_URL = "http://127.0.0.1:4181";
-const BRIDGE_VERSION = "0.7.0";
+const BRIDGE_VERSION = "0.8.0";
 
 async function bridgePost(path, body) {
   const response = await fetch(`${BRIDGE_URL}${path}`, {

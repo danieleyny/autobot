@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.7.0";
+  const VERSION = "0.8.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -78,7 +78,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.7.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.8.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -215,7 +215,31 @@
     if (Number.isFinite(payload.releaseAt)) {
       $("#release-at").value = localDateTimeValue(Number(payload.releaseAt));
     }
+    if (typeof payload.eventPassword === "string") {
+      $("#event-password").value = payload.eventPassword;
+    }
     $("#execute").checked = command.type === "arm-live" && payload.execute === true;
+  }
+
+  function prepareStandby(command) {
+    applyControlConfiguration(command);
+    stopped = false;
+    armButton.disabled = true;
+    const releaseAt = Number(command.payload?.releaseAt);
+    if (Number.isFinite(releaseAt) && releaseAt > Date.now()) {
+      const updateCountdown = () => {
+        const seconds = Math.max(0, Math.ceil((releaseAt - Date.now()) / 1000));
+        armButton.textContent = seconds > 0 ? `Standby · ${seconds}s` : "Standby · ready";
+      };
+      updateCountdown();
+      countdownTimer = setInterval(updateCountdown, 250);
+    } else {
+      armButton.textContent = "Standby · ready";
+    }
+    const gate = passwordGate();
+    if (gate && typeof command.payload?.eventPassword === "string") {
+      setNativeValue(gate.input, command.payload.eventPassword);
+    }
   }
 
   async function handleControlCommand(command) {
@@ -231,8 +255,11 @@
     }
     if (command.type === "standby") {
       activeControlCommand = command;
-      log("Command center: this device is a standby. No reservation controls will be clicked.");
-      await controlReport(command, "standby");
+      prepareStandby(command);
+      log("Command center: setup received and this device is armed as standby. No reservation controls will be clicked.");
+      await controlReport(command, "standby", {
+        passwordPrepared: typeof command.payload?.eventPassword === "string",
+      });
       return;
     }
     if (!["inspect", "arm-live"].includes(command.type)) {

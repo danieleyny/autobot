@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import express from "express";
+import { decryptForDevice, generateDeviceKeyPair } from "./encryption.js";
 import { configPath, readOption, type DeviceConfig } from "./options.js";
 
 type ControllerCommand = {
@@ -11,6 +12,14 @@ type ControllerCommand = {
 
 const file = configPath();
 const config = JSON.parse(await readFile(file, "utf8")) as DeviceConfig;
+if (!config.publicKeyPem || !config.privateKeyPem) {
+  const keyPair = generateDeviceKeyPair();
+  config.publicKeyPem = keyPair.publicKeyPem;
+  config.privateKeyPem = keyPair.privateKeyPem;
+  await writeFile(file, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await chmod(file, 0o600).catch(() => {});
+  console.log("Created this device's private encryption key for command-center passwords.");
+}
 const port = Number(readOption("port", "4181"));
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Device bridge port is invalid.");
 
@@ -41,7 +50,8 @@ async function heartbeat() {
     const extensionConnected = Date.now() - extensionSeenAt < 4_000;
     const result = await controllerRequest({
       action: "poll",
-      version: "0.7.0",
+      version: "0.8.0",
+      publicKey: config.publicKeyPem,
       status: {
         ...extensionStatus,
         bridgeOnline: true,
@@ -52,8 +62,25 @@ async function heartbeat() {
     });
     controllerOnline = true;
     if (!pendingCommand && result.command && typeof result.command === "object") {
-      pendingCommand = result.command as ControllerCommand;
-      console.log(`Received ${pendingCommand.type} command ${pendingCommand.id}.`);
+      const command = result.command as ControllerCommand;
+      try {
+        const payload = { ...command.payload };
+        if (typeof payload.eventSecret === "string") {
+          payload.eventPassword = decryptForDevice(payload.eventSecret, config.privateKeyPem!);
+          delete payload.eventSecret;
+        }
+        pendingCommand = { ...command, payload };
+        console.log(`Received ${pendingCommand.type} command ${pendingCommand.id}.`);
+      } catch (error) {
+        console.error(`Could not decrypt command ${command.id}: ${error instanceof Error ? error.message : String(error)}`);
+        await controllerRequest({
+          action: "report",
+          commandId: command.id,
+          runId: command.runId,
+          phase: "failed",
+          detail: { message: "This device could not decrypt the command-center password." },
+        }).catch(() => {});
+      }
     }
   } catch (error) {
     if (controllerOnline) {
@@ -81,7 +108,7 @@ app.use((request, response, next) => {
     response.sendStatus(204);
     return;
   }
-  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.7.0") {
+  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.8.0") {
     response.status(401).json({ error: "Extension bridge version is missing." });
     return;
   }
@@ -140,7 +167,7 @@ app.post("/extension/report", async (request, response) => {
 });
 
 const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`AUTOBOT device bridge v0.7.0: ${config.name}`);
+  console.log(`AUTOBOT device bridge v0.8.0: ${config.name}`);
   console.log(`Local extension bridge: http://127.0.0.1:${port}`);
   console.log(`Controller: ${config.controllerUrl}`);
 });

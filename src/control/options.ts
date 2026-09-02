@@ -5,6 +5,8 @@ export type DeviceConfig = {
   deviceId: string;
   token: string;
   name: string;
+  publicKeyPem?: string;
+  privateKeyPem?: string;
 };
 
 export function readOption(name: string, fallback?: string): string | undefined {

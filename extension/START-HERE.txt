@@ -1,11 +1,11 @@
-AUTOBOT RSVP LAB v0.7.0 — SCHOOL COMPUTER SETUP
+AUTOBOT RSVP LAB v0.8.0 — SCHOOL COMPUTER SETUP
 =================================================
 
 WHAT YOU NEED
 
 - Google Chrome
 - Permission to enable Chrome Developer mode
-- The extracted AUTOBOT-v0.7.0 folder
+- The extracted AUTOBOT-v0.8.0 folder
 
 
 INSTALL — ABOUT 2 MINUTES
@@ -25,13 +25,13 @@ INSTALL — ABOUT 2 MINUTES
 
 6. Click "Load unpacked".
 
-7. Select the extracted autobot-main folder.
-   Select the folder itself—the one containing manifest.json.
+7. Open the extracted AUTOBOT folder and select its extension folder.
+   The extension folder is the one containing manifest.json.
 
 8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
 
 9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.7.0.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.8.0.
 
 
 OPTIONAL COMMAND CENTER
@@ -45,7 +45,9 @@ OPTIONAL COMMAND CENTER
   standby, and stop commands. Uncheck it whenever you want this computer to
   operate only from its own local panel.
 
-- Event passwords, POSH login, OTP, and CAPTCHA checks remain local and manual.
+- The Command Center can securely send the event password and release time to
+  every selected device. The password is encrypted separately for each device.
+- POSH login, OTP, and CAPTCHA checks remain local and manual.
 
 
 BEFORE THE DEMONSTRATION
@@ -56,7 +58,8 @@ BEFORE THE DEMONSTRATION
 
 3. Confirm the event title and ticket-selection option.
 
-4. Enter the event password and local release time.
+4. For standalone operation, enter the event password and local release time.
+   For managed operation, enter them once in the Command Center instead.
 
 5. Leave "Four-minute password retry window" checked.
 
@@ -70,8 +73,9 @@ BEFORE THE DEMONSTRATION
 
 IMPORTANT
 
-- The extension never includes or transfers your POSH login, OTP, event
-  password, browser session, or previous test locks.
+- The extension never transfers your POSH login, OTP, browser session, or
+  previous test locks. Managed event passwords arrive encrypted and are
+  decrypted only on this computer.
 
 - Authentication, OTP, CAPTCHA/Cloudflare, and payment steps remain manual.
 

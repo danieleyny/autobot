@@ -15,6 +15,7 @@ type DeviceRow = {
   version: string;
   mode: "local" | "managed";
   state_json: string;
+  public_key: string | null;
   last_seen_at: number | null;
   created_at: number;
 };
@@ -93,7 +94,7 @@ export async function GET() {
   const db = getD1();
   const [deviceResult, runResult, auditResult, leaseResult] = await db.batch([
     db.prepare(
-      `SELECT id, name, version, mode, state_json, last_seen_at, created_at
+      `SELECT id, name, version, mode, state_json, public_key, last_seen_at, created_at
        FROM devices WHERE owner_id = ? ORDER BY created_at ASC`,
     ).bind(user.userId),
     db.prepare(
@@ -118,6 +119,8 @@ export async function GET() {
     version: device.version,
     mode: device.mode,
     state: parseJson<Record<string, unknown>>(device.state_json, {}),
+    encryptionPublicKey: device.public_key,
+    encryptionReady: Boolean(device.public_key),
     lastSeenAt: device.last_seen_at,
     online: Boolean(device.last_seen_at && device.last_seen_at >= onlineCutoff),
     createdAt: device.created_at,
@@ -258,11 +261,11 @@ export async function POST(request: NextRequest) {
         const placeholders = selectedIds.map(() => "?").join(",");
         const deviceRows = await getD1()
           .prepare(
-            `SELECT id, last_seen_at, state_json FROM devices
+            `SELECT id, last_seen_at, state_json, public_key FROM devices
              WHERE owner_id = ? AND id IN (${placeholders})`,
           )
           .bind(user.userId, ...selectedIds)
-          .all<{ id: string; last_seen_at: number | null; state_json: string }>();
+          .all<{ id: string; last_seen_at: number | null; state_json: string; public_key: string | null }>();
         if (deviceRows.results.length !== selectedIds.length) throw new Error("One or more devices do not belong to this controller.");
         if (deviceRows.results.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
           throw new Error("Every selected device must be online before arming.");
@@ -273,6 +276,31 @@ export async function POST(request: NextRequest) {
           )
         ) {
           throw new Error("Every selected device must have command-center control enabled locally.");
+        }
+
+        const encryptedSecrets =
+          body.encryptedSecrets && typeof body.encryptedSecrets === "object" && !Array.isArray(body.encryptedSecrets)
+            ? (body.encryptedSecrets as Record<string, unknown>)
+            : {};
+        const passwordIncluded = Object.keys(encryptedSecrets).length > 0;
+        if (passwordIncluded) {
+          for (const device of deviceRows.results) {
+            if (!device.public_key) {
+              throw new Error("Every selected device must show Password ready before sending an event password.");
+            }
+            const ciphertext = encryptedSecrets[device.id];
+            if (
+              typeof ciphertext !== "string" ||
+              ciphertext.length < 300 ||
+              ciphertext.length > 800 ||
+              !/^[A-Za-z0-9_-]+$/.test(ciphertext)
+            ) {
+              throw new Error("The encrypted event password is missing or invalid for a selected device.");
+            }
+          }
+          if (Object.keys(encryptedSecrets).some((deviceId) => !selectedIds.includes(deviceId))) {
+            throw new Error("Encrypted password data contains an unselected device.");
+          }
         }
 
         const payload = {
@@ -298,7 +326,11 @@ export async function POST(request: NextRequest) {
               deviceId,
               runId,
               type: "inspect",
-              payload: { ...payload, execute: false },
+              payload: {
+                ...payload,
+                execute: false,
+                ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
+              },
             });
           }
         } else {
@@ -333,8 +365,18 @@ export async function POST(request: NextRequest) {
               runId,
               type: isPrimary ? "arm-live" : "standby",
               payload: isPrimary
-                ? { ...payload, execute: true, leaseId }
-                : { runId, eventTitle: run.event_title, primaryDeviceId },
+                ? {
+                    ...payload,
+                    execute: true,
+                    leaseId,
+                    ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
+                  }
+                : {
+                    ...payload,
+                    execute: false,
+                    primaryDeviceId,
+                    ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
+                  },
             });
           }
         }
@@ -348,7 +390,7 @@ export async function POST(request: NextRequest) {
           runId,
           source: "control",
           action: "run-armed",
-          detail: { mode: run.mode, devices: selectedIds.length },
+          detail: { mode: run.mode, devices: selectedIds.length, passwordDelivered: passwordIncluded },
         });
         return NextResponse.json({ ok: true });
       }

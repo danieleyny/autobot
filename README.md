@@ -8,10 +8,10 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.7.0 also includes an optional multi-device Command Center. The
-hosted dashboard is currently v0.7.1. Every
-device keeps the original local extension controls; pairing a device only adds
-central inspection, arming, standby, stop, and audit capabilities.
+AUTOBOT v0.8.0 includes an optional multi-device Command Center. Every device
+keeps the original local extension controls; pairing adds central event setup,
+encrypted password delivery, inspection, arming, standby, stop, and audit
+capabilities.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -49,8 +49,9 @@ Use these steps when adding a friend's computer to the hosted Command Center:
 8. Confirm the device appears online, then run **Inspection** before attempting
    a controlled live test.
 
-Pairing codes work once and expire after ten minutes. POSH sign-in, OTP,
-CAPTCHA/Cloudflare checks, and event passwords remain local and manual.
+Pairing codes work once and expire after ten minutes. POSH sign-in, OTP, and
+CAPTCHA/Cloudflare checks remain local and manual. The dashboard may deliver an
+event password encrypted separately for each selected v0.8.0 device.
 
 ## Install
 
@@ -141,15 +142,17 @@ instead of localhost. The private device token is stored only in the ignored
 `config/device.json` file. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.7.0. On a POSH event page,
+Reload the unpacked extension after installing v0.8.0. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
 that device from any pending central command.
 
-The controller never receives the POSH login, OTP, CAPTCHA response, event
-password, attendee information, or payment information. Event passwords remain
-in the local page's memory, exactly as in standalone mode.
+The controller never receives the POSH login, OTP, CAPTCHA response, attendee
+information, payment information, or a readable event password. The dashboard
+encrypts the password in the browser with each device's public key; only that
+device's local bridge can decrypt it. Standalone mode still accepts a password
+directly in the local extension panel.
 
 Validate the controller's primary/standby lease behavior with:
 

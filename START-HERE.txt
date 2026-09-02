@@ -1,4 +1,4 @@
-AUTOBOT v0.7.0 — SECOND COMPUTER QUICK START
+AUTOBOT v0.8.0 — SECOND COMPUTER QUICK START
 ==============================================
 
 WHAT YOU NEED
@@ -38,7 +38,7 @@ Run:
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.7.0 appears.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.8.0 appears.
 
 
 5. CREATE A PAIRING CODE
@@ -91,5 +91,7 @@ For the current login session, still start the bridge with npm run device.
 IMPORTANT
 
 - Use only the organizer-owned free test event.
-- POSH login, OTP, CAPTCHA, event passwords, and payment data stay local.
+- POSH login, OTP, CAPTCHA, and payment data stay local.
+- A password entered in the Command Center is encrypted separately for this
+  device and decrypted only by its local bridge.
 - Every computer can still operate independently using its local AUTOBOT panel.

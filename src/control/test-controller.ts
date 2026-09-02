@@ -1,6 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pbkdf2Sync } from "node:crypto";
 import assert from "node:assert/strict";
+import {
+  decryptForDevice,
+  encryptForDevice,
+  generateDeviceKeyPair,
+  type DeviceKeyPair,
+} from "./encryption.js";
 
 const origin = process.env.AUTOBOT_TEST_CONTROLLER_ORIGIN ?? "http://localhost:3000";
 const testPin = process.env.AUTOBOT_TEST_PIN ?? "12345678";
@@ -70,6 +76,7 @@ async function jsonRequest(
 }
 
 async function pairDevice(cookie: string, name: string) {
+  const keys = generateDeviceKeyPair();
   const pairing = await jsonRequest(
     "/api/control",
     { action: "create-pairing", label: name },
@@ -79,17 +86,19 @@ async function pairDevice(cookie: string, name: string) {
     action: "pair",
     code: pairing.code,
     name,
-    version: "0.7.0-test",
+    version: "0.8.0-test",
+    publicKey: keys.publicKeyPem,
   });
-  return { id: String(device.deviceId), token: String(device.token) };
+  return { id: String(device.deviceId), token: String(device.token), keys };
 }
 
-async function poll(token: string) {
+async function poll(token: string, keys: DeviceKeyPair) {
   return jsonRequest(
     "/api/device",
     {
       action: "poll",
-      version: "0.7.0-test",
+      version: "0.8.0-test",
+      publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
         extensionConnected: true,
@@ -134,8 +143,8 @@ try {
   assert.ok(cookie, "The test PIN did not issue a dashboard session.");
   const primary = await pairDevice(cookie, `Primary ${crypto.randomUUID().slice(0, 8)}`);
   const standby = await pairDevice(cookie, `Standby ${crypto.randomUUID().slice(0, 8)}`);
-  await poll(primary.token);
-  await poll(standby.token);
+  await poll(primary.token, primary.keys);
+  await poll(standby.token, standby.keys);
 
   const eventTitle = `AUTOBOT Lease Test ${crypto.randomUUID().slice(0, 8)}`;
   const created = await jsonRequest(
@@ -154,6 +163,7 @@ try {
     { cookie },
   );
   const runId = String(created.id);
+  const eventPassword = `fleet-${crypto.randomUUID().slice(0, 8)}`;
   await jsonRequest(
     "/api/control",
     {
@@ -162,16 +172,33 @@ try {
       deviceIds: [primary.id, standby.id],
       primaryDeviceId: primary.id,
       confirmEventTitle: eventTitle,
+      encryptedSecrets: {
+        [primary.id]: encryptForDevice(eventPassword, primary.keys.publicKeyPem),
+        [standby.id]: encryptForDevice(eventPassword, standby.keys.publicKeyPem),
+      },
     },
     { cookie },
   );
 
-  const primaryPoll = await poll(primary.token);
-  const standbyPoll = await poll(standby.token);
+  const primaryPoll = await poll(primary.token, primary.keys);
+  const standbyPoll = await poll(standby.token, standby.keys);
   const primaryCommand = primaryPoll.command as Record<string, unknown>;
   const standbyCommand = standbyPoll.command as Record<string, unknown>;
   assert.equal(primaryCommand.type, "arm-live");
   assert.equal(standbyCommand.type, "standby");
+  const primaryPayload = primaryCommand.payload as Record<string, unknown>;
+  const standbyPayload = standbyCommand.payload as Record<string, unknown>;
+  assert.equal(primaryPayload.eventPassword, undefined);
+  assert.equal(standbyPayload.eventPassword, undefined);
+  assert.equal(
+    decryptForDevice(String(primaryPayload.eventSecret), primary.keys.privateKeyPem),
+    eventPassword,
+  );
+  assert.equal(
+    decryptForDevice(String(standbyPayload.eventSecret), standby.keys.privateKeyPem),
+    eventPassword,
+  );
+  assert.equal(primaryPayload.releaseAt, standbyPayload.releaseAt);
 
   await jsonRequest(
     "/api/device",
@@ -210,7 +237,7 @@ try {
   const lease = (finalState.leases as Array<Record<string, unknown>>).find((item) => item.run_id === runId);
   assert.equal(run?.status, "completed");
   assert.equal(lease?.status, "submitted");
-  console.log("Control integration passed: one primary lease, standby blocked, run completed once.");
+  console.log("Control integration passed: encrypted fleet setup, one primary lease, standby blocked, run completed once.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }

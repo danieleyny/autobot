@@ -105,25 +105,38 @@ test("central inspection command verifies a free ticket without selecting it", a
   await expect(page.locator("#autobot-owned-event-lab")).toBeAttached();
 });
 
-test("standby command never arms or clicks the event", async ({ page }) => {
+test("standby receives the fleet password and time without clicking the event", async ({ page }) => {
+  const releaseAt = Date.now() + 60_000;
   await installChromeMock(page, {
     id: "standby-command",
     runId: "live-run",
     type: "standby",
     payload: {
       runId: "live-run",
+      eventUrl: "http://127.0.0.1:4173/event",
       eventTitle: "AUTOBOT Classroom Test Drop",
-      primaryDeviceId: "other-device"
+      primaryDeviceId: "other-device",
+      releaseAt,
+      ticketStrategy: "any",
+      eventPassword: "fleet-password"
     }
   });
   await page.goto("http://127.0.0.1:4173/event");
   await page.setContent(`
     <title>AUTOBOT Classroom Test Drop</title>
-    <main><h1>AUTOBOT Classroom Test Drop</h1><button id="event-action">RSVP</button></main>
+    <main>
+      <form><input id="posh-password" placeholder="Password"><button id="password-submit" type="submit">Enter</button></form>
+      <h1>AUTOBOT Classroom Test Drop</h1>
+      <button id="event-action">RSVP</button>
+    </main>
   `);
   await page.evaluate(() => {
     Object.assign(window, { __standbyClicks: 0 });
     document.querySelector("#event-action")?.addEventListener("click", () => {
+      (window as unknown as { __standbyClicks: number }).__standbyClicks += 1;
+    });
+    document.querySelector("form")?.addEventListener("submit", (event) => {
+      event.preventDefault();
       (window as unknown as { __standbyClicks: number }).__standbyClicks += 1;
     });
   });
@@ -143,4 +156,8 @@ test("standby command never arms or clicks the event", async ({ page }) => {
   expect(
     await page.evaluate(() => (window as unknown as { __standbyClicks: number }).__standbyClicks)
   ).toBe(0);
+  await expect(page.locator("#posh-password")).toHaveValue("fleet-password");
+  await expect(page.locator("#event-password")).toHaveValue("fleet-password");
+  await expect(page.locator("#release-at")).not.toHaveValue("");
+  await expect(page.locator("#arm")).toContainText("Standby");
 });
