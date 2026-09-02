@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f3f5ef;
+  --foreground: #172018;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #69736b;
+}
+
+.device-dot {
+  margin-top: 0.35rem;
+  height: 0.625rem;
+  width: 0.625rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.device-dot.ready {
+  background: #77b82a;
+  box-shadow: 0 0 0 4px rgb(119 184 42 / 12%);
+}
+
+.device-dot.local {
+  background: #879188;
+  box-shadow: 0 0 0 4px rgb(135 145 136 / 12%);
+}
+
+.field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.field span {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #59645b;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  border: 1px solid #cbd2c7;
+  border-radius: 0.75rem;
+  background: #fbfcfa;
+  padding: 0.75rem 0.85rem;
+  color: #29342b;
+  outline: none;
+}
+
+.check-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border: 1px solid #d7dcd3;
+  border-radius: 0.75rem;
+  padding: 0.8rem;
+  color: #4d594f;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.check-card input {
+  margin-top: 0.1rem;
+  accent-color: #172018;
+}
+
+::selection {
+  background: #b8ff5a;
+  color: #172018;
+}

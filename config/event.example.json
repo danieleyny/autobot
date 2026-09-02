@@ -1,0 +1,11 @@
+{
+  "provider": "mock",
+  "eventUrl": "http://127.0.0.1:4173/event",
+  "expectedEventTitle": "AUTOBOT Classroom Test Drop",
+  "expectedTicketName": "Free Test RSVP",
+  "releaseAt": null,
+  "organizerOwned": true,
+  "permissionConfirmed": true,
+  "maxRefreshes": 8,
+  "refreshIntervalMs": 1500
+}

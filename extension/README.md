@@ -7,6 +7,22 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
+## Optional Command Center in v0.7.0
+
+The normal panel remains fully standalone. If the local v0.7.0 device bridge is
+running, the bottom of the panel shows the paired device name and a green
+connection indicator. **Allow command center** controls whether that device may
+accept central inspection, live-primary, standby, and stop commands.
+
+Unchecking it immediately restores standalone-only operation. The local **Run /
+Arm** and **Stop** buttons always remain available. If a local run replaces a
+pending managed command, the controller records a local override and withdraws
+the central run instead of silently allowing two executors.
+
+The Command Center does not transmit event passwords. Enter any password on the
+individual device before a centrally scheduled password-gate test. POSH login,
+OTP, Cloudflare, event passwords, and completion locks all remain local.
+
 ## Install locally
 
 1. Open normal Google Chrome.
@@ -70,6 +86,26 @@ POSH's current failure toast uses wording such as **out of stock**. The helper
 recognizes that wording immediately. After returning to the selector, it removes
 the failed ticket's retained quantity before adding the alternative, preventing
 the second checkout from accidentally containing both RSVP options.
+
+POSH may keep the first ticket's out-of-stock notification visible while the
+alternative is being attempted. Before each Checkout and final RSVP submission,
+the helper records the failure messages already on-screen and responds only to
+new sold-out evidence. A stale notification from the first ticket therefore
+cannot incorrectly mark the second ticket as unavailable.
+
+POSH also reuses one dialog container for both the ticket selector and the
+**Your Order** screen. The helper treats that dialog as the selector only while
+it contains visible ticket cards. After an out-of-stock response, it can
+therefore recognize the order screen, click **Back**, and wait for the actual
+ticket choices before removing or selecting anything.
+
+POSH can update the failed ticket card before it retires the old Checkout
+control and its click handler. The helper now waits for the empty cart to settle
+and for that old control to disappear before adding the alternative. After the
+new Checkout opens, the helper verifies that **Your Order** visibly names the
+newly selected ticket before it can submit the final RSVP. This prevents a
+second-ticket log entry from accidentally submitting the stale first-ticket
+order.
 
 POSH may also leave a rejected final RSVP on the order page without recognizable
 sold-out text. If **Your Order**, **Total Due**, and exactly one **Back** control

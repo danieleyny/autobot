@@ -2,6 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
+  const VERSION = "0.7.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -66,9 +67,18 @@
         white-space: pre-wrap; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .warning { margin-top: 10px; color: #f4c66b; font-size: 11px; }
+      .control-state {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        margin-top: 10px; border-top: 1px solid #30343b; padding-top: 10px;
+        color: #aeb4bf; font-size: 11px;
+      }
+      .control-state .check { margin: 0; color: #d9dce2; font-size: 11px; }
+      .control-dot { width: 8px; height: 8px; border-radius: 50%; background: #777e89; }
+      .control-dot.online { background: #b8ff5a; box-shadow: 0 0 0 3px rgba(184,255,90,.12); }
+      .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.6.6</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.7.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -103,6 +113,16 @@
         <button id="reset-lock" class="secondary">Reset this event's test locks</button>
       </div>
       <div id="status" class="status" role="status">Ready. Authenticate with POSH normally before executing.</div>
+      <div class="control-state">
+        <div class="control-copy">
+          <span id="control-dot" class="control-dot"></span>
+          <span id="control-status">Standalone · checking for bridge</span>
+        </div>
+        <label class="check">
+          <input id="allow-control" type="checkbox" checked>
+          Allow command center
+        </label>
+      </div>
       <div class="warning">Stops for login, CAPTCHA, payment, ambiguity, or unexpected checkout fields.</div>
     </section>
   `;
@@ -112,11 +132,18 @@
   const armButton = $("#arm");
   const disarmButton = $("#disarm");
   const resetLockButton = $("#reset-lock");
+  const allowControl = $("#allow-control");
+  const controlStatus = $("#control-status");
+  const controlDot = $("#control-dot");
   let stopped = false;
   let countdownTimer = null;
+  let latestLogMessage = "Ready";
+  let activeControlCommand = null;
+  let handledControlCommandId = null;
 
   function log(message) {
     const time = new Date().toLocaleTimeString();
+    latestLogMessage = message;
     status.textContent = `[${time}] ${message}\n${status.textContent}`.slice(0, 3000);
   }
 
@@ -126,6 +153,123 @@
 
   function sameText(left, right) {
     return normalize(left).toLocaleLowerCase() === normalize(right).toLocaleLowerCase();
+  }
+
+  function localDateTimeValue(timestamp) {
+    const date = new Date(timestamp);
+    const offset = date.getTimezoneOffset() * 60_000;
+    return new Date(timestamp - offset).toISOString().slice(0, 16);
+  }
+
+  function deviceControlStatus() {
+    return {
+      extensionVersion: VERSION,
+      controlEnabled: Boolean(allowControl.checked),
+      pageReady: Boolean(normalize(document.title)),
+      eventUrl: location.href,
+      eventTitle: normalize($("#event-title").value) || normalize(document.title),
+      armed: Boolean(armButton.disabled),
+      executing: Boolean(activeControlCommand?.executionStarted),
+      commandId: activeControlCommand?.id || null,
+      runId: activeControlCommand?.runId || null,
+      latestMessage: latestLogMessage
+    };
+  }
+
+  async function bridgeMessage(message) {
+    if (!chrome.runtime?.sendMessage) return null;
+    try {
+      return await chrome.runtime.sendMessage(message);
+    } catch {
+      return null;
+    }
+  }
+
+  async function controlReport(command, phase, detail = {}) {
+    if (!command?.id) return { ok: true, local: true };
+    const result = await bridgeMessage({
+      type: "autobot:control-report",
+      report: {
+        commandId: command.id,
+        runId: command.runId || command.payload?.runId || null,
+        phase,
+        detail
+      }
+    });
+    if (!result?.ok) {
+      throw new Error(result?.error || "The command center did not acknowledge the device report.");
+    }
+    return result;
+  }
+
+  function applyControlConfiguration(command) {
+    const payload = command.payload || {};
+    const expectedUrl = new URL(payload.eventUrl);
+    if (expectedUrl.hostname !== location.hostname || expectedUrl.pathname !== location.pathname) {
+      throw new Error(`Open the configured event page before arming: ${expectedUrl.pathname}`);
+    }
+    if (typeof payload.eventTitle === "string") $("#event-title").value = payload.eventTitle;
+    if (["any", "first", "second"].includes(payload.ticketStrategy)) {
+      $("#ticket-selection").value = payload.ticketStrategy;
+    }
+    if (Number.isFinite(payload.releaseAt)) {
+      $("#release-at").value = localDateTimeValue(Number(payload.releaseAt));
+    }
+    $("#execute").checked = command.type === "arm-live" && payload.execute === true;
+  }
+
+  async function handleControlCommand(command) {
+    if (!command?.id || handledControlCommandId === command.id) return;
+    handledControlCommandId = command.id;
+    if (!allowControl.checked) return;
+
+    if (command.type === "stop") {
+      await disarm();
+      await controlReport(command, "stopped");
+      activeControlCommand = null;
+      return;
+    }
+    if (command.type === "standby") {
+      activeControlCommand = command;
+      log("Command center: this device is a standby. No reservation controls will be clicked.");
+      await controlReport(command, "standby");
+      return;
+    }
+    if (!["inspect", "arm-live"].includes(command.type)) {
+      await controlReport(command, "failed", { message: `Unsupported command: ${command.type}` });
+      return;
+    }
+
+    activeControlCommand = command;
+    applyControlConfiguration(command);
+    log(`Command center: ${command.type === "inspect" ? "inspection" : "live primary"} command accepted.`);
+    await controlReport(command, "accepted");
+    await arm(command);
+  }
+
+  async function pollControlBridge() {
+    if (!chrome.runtime?.sendMessage) return;
+    const result = await bridgeMessage({
+      type: "autobot:control-poll",
+      status: deviceControlStatus()
+    });
+    const connected = Boolean(result?.connected);
+    controlDot.classList.toggle("online", connected);
+    controlStatus.textContent = connected
+      ? `${result.deviceName || "Device"} · ${allowControl.checked ? "managed + local" : "standalone"}`
+      : "Standalone · bridge offline";
+    if (connected && allowControl.checked && result.command) {
+      await handleControlCommand(result.command).catch((error) => {
+        fail(error);
+      });
+    }
+  }
+
+  async function runControlLoop() {
+    while (document.getElementById(ROOT_ID)) {
+      await pollControlBridge().catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
   }
 
   function completionKey(ticketName) {
@@ -527,6 +671,19 @@
   async function executeReservation(config) {
     if (stopped) return;
     assertEvent(config);
+    if (config.execute && config.controlCommandId && !config.controlExecutionStarted) {
+      if (!activeControlCommand || activeControlCommand.id !== config.controlCommandId) {
+        throw new Error("The central execution lease is no longer attached to this run.");
+      }
+      await controlReport(activeControlCommand, "execution-started", {
+        eventTitle: config.eventTitle,
+        releaseAt: config.releaseAt
+      });
+      config.controlExecutionStarted = true;
+      activeControlCommand.executionStarted = true;
+      await saveState(config);
+      log("Command center lease activated. This is the only centrally authorized executor.");
+    }
     await openTicketPicker();
 
     let selectionMessage = "";
@@ -594,6 +751,14 @@
 
     if (!config.execute) {
       log("Inspection complete. No ticket was selected.");
+      if (config.controlCommandId && activeControlCommand?.id === config.controlCommandId) {
+        const command = activeControlCommand;
+        activeControlCommand = null;
+        await controlReport(command, "inspection-complete", {
+          eventTitle: config.eventTitle,
+          ticketName: resolvedTicketName
+        }).catch(() => {});
+      }
       await clearState();
       return;
     }
@@ -683,6 +848,11 @@
     rememberVisibleSoldOutEvidence(config);
     outcome.click();
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
+    if (config.controlCommandId && activeControlCommand?.id === config.controlCommandId) {
+      await controlReport(activeControlCommand, "submitted", { ticketName: resolvedTicketName }).catch(
+        () => {}
+      );
+    }
     const finalSubmittedAt = Date.now();
 
     let finalResult;
@@ -756,6 +926,10 @@
       attemptedTicketNames: [],
       excludedTicketNames: [],
       seenSoldOutEvidence: [],
+      controlCommandId: activeControlCommand?.id || null,
+      controlRunId: activeControlCommand?.runId || activeControlCommand?.payload?.runId || null,
+      controlLeaseId: activeControlCommand?.payload?.leaseId || null,
+      controlExecutionStarted: false,
       armed: true
     };
   }
@@ -782,6 +956,14 @@
         result
       }
     });
+    if (config.controlCommandId && activeControlCommand?.id === config.controlCommandId) {
+      const command = activeControlCommand;
+      activeControlCommand = null;
+      await controlReport(command, result === "confirmed" ? "confirmed" : result, {
+        ticketName: config.ticketName,
+        result
+      }).catch(() => {});
+    }
     await clearState();
   }
 
@@ -868,7 +1050,15 @@
     throw new Error(`Password was not accepted during the bounded release window (${attempts} attempts).`);
   }
 
-  async function arm() {
+  async function arm(command = null) {
+    if (!command?.id && activeControlCommand) {
+      const overridden = activeControlCommand;
+      activeControlCommand = null;
+      controlReport(overridden, "local-override", {
+        note: "The operator used this device's local Run / Arm control."
+      }).catch(() => {});
+      log("Local control selected. The command center lease does not cover this manual run.");
+    }
     stopped = false;
     armButton.disabled = true;
     try {
@@ -941,15 +1131,45 @@
   function fail(error) {
     const message = error instanceof Error ? error.message : String(error);
     log(`STOPPED: ${message}`);
+    if (activeControlCommand) {
+      const command = activeControlCommand;
+      activeControlCommand = null;
+      controlReport(command, "failed", { message }).catch(() => {});
+    }
     armButton.disabled = false;
     armButton.textContent = "Run / Arm";
     clearState().catch(() => {});
   }
 
-  armButton.addEventListener("click", arm);
-  disarmButton.addEventListener("click", disarm);
+  armButton.addEventListener("click", () => {
+    arm().catch(fail);
+  });
+  disarmButton.addEventListener("click", () => {
+    const command = activeControlCommand;
+    activeControlCommand = null;
+    disarm()
+      .then(() => (command ? controlReport(command, "stopped") : null))
+      .catch(fail);
+  });
   resetLockButton.addEventListener("click", () => {
     resetEventLocks().catch(fail);
+  });
+
+  allowControl.addEventListener("change", () => {
+    chrome.storage.local.set({ "autobot:allow-control": Boolean(allowControl.checked) }).catch(() => {});
+    if (!allowControl.checked && activeControlCommand) {
+      const command = activeControlCommand;
+      activeControlCommand = null;
+      controlReport(command, "local-override", {
+        note: "Command-center control was disabled locally."
+      }).catch(() => {});
+      disarm().catch(fail);
+    }
+    log(
+      allowControl.checked
+        ? "Command-center control enabled. Local controls remain available."
+        : "Standalone mode enabled on this device."
+    );
   });
 
   loadState().then((state) => {
@@ -971,4 +1191,9 @@
   if (detectedTitle && !sameText(detectedTitle, "POSH")) {
     $("#event-title").value = detectedTitle;
   }
+
+  chrome.storage.local.get("autobot:allow-control").then((stored) => {
+    allowControl.checked = stored["autobot:allow-control"] !== false;
+  });
+  runControlLoop().catch(() => {});
 })();

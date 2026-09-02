@@ -1,0 +1,10 @@
+node_modules/
+dist/
+tmp-social-preview/
+.posh-profile/
+artifacts/
+test-results/
+playwright-report/
+config/live-event*.json
+config/device.json
+.DS_Store

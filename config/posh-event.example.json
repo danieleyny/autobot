@@ -1,0 +1,13 @@
+{
+  "provider": "posh",
+  "eventUrl": "https://posh.vip/e/REPLACE-WITH-YOUR-PRIVATE-EVENT",
+  "expectedEventTitle": "REPLACE WITH THE EXACT EVENT TITLE",
+  "expectedTicketName": "Free Test RSVP",
+  "eventPasswordEnv": "POSH_EVENT_PASSWORD",
+  "ticketPasswordEnv": "POSH_TICKET_PASSWORD",
+  "releaseAt": null,
+  "organizerOwned": true,
+  "permissionConfirmed": false,
+  "maxRefreshes": 8,
+  "refreshIntervalMs": 1500
+}

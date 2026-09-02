@@ -1,74 +1,95 @@
-AUTOBOT RSVP LAB v0.6.6 — SCHOOL COMPUTER SETUP
-=================================================
+AUTOBOT v0.7.0 — SECOND COMPUTER QUICK START
+==============================================
 
 WHAT YOU NEED
 
 - Google Chrome
+- Node.js LTS from https://nodejs.org
 - Permission to enable Chrome Developer mode
-- The extracted AUTOBOT-v0.5.0 folder
+- A one-time pairing code from the AUTOBOT Command Center
 
 
-INSTALL — ABOUT 2 MINUTES
+1. DOWNLOAD AND EXTRACT
 
-1. Download the newest AUTOBOT ZIP from the GitHub repository.
-
-2. Double-click the ZIP file to extract it.
-   You should now see an extracted folder such as autobot-main.
-
-3. Open Google Chrome.
-
-4. Type this into Chrome's address bar and press Enter:
-
-   chrome://extensions
-
-5. Turn on "Developer mode" in the upper-right corner.
-
-6. Click "Load unpacked".
-
-7. Select the extracted autobot-main folder.
-   Select the folder itself—the one containing manifest.json.
-
-8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
-
-9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.6.6.
+On GitHub, click Code, then Download ZIP. Double-click the ZIP to extract it.
 
 
-BEFORE THE DEMONSTRATION
+2. OPEN A TERMINAL IN THE AUTOBOT FOLDER
 
-1. Sign into POSH normally and complete any OTP or Cloudflare check yourself.
+Windows:
+- Open the extracted autobot folder.
+- Click the File Explorer address bar, type powershell, and press Enter.
 
-2. Open your organizer-owned POSH test event.
+Mac:
+- Open Terminal and type: cd 
+- Drag the extracted autobot folder into Terminal and press Enter.
 
-3. Confirm the event title and ticket-selection option.
 
-4. Enter the event password and local release time.
+3. INSTALL
 
-5. Leave "Four-minute password retry window" checked.
+Run:
 
-6. Check "Execute one free RSVP" for the real demonstration.
-   Leave it unchecked only when you want inspection mode with no reservation.
+  npm install
 
-7. Click "Run / Arm" at least two minutes before the release.
 
-8. Keep Chrome open, keep the event tab visible, and keep the computer awake.
+4. LOAD THE CHROME EXTENSION
+
+- Open chrome://extensions
+- Turn on Developer mode.
+- Click Load unpacked.
+- Select the extension folder inside the extracted autobot folder.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.7.0 appears.
+
+
+5. CREATE A PAIRING CODE
+
+- Open https://autobot-command-center.avgschnook.chatgpt.site
+- Enter the dashboard PIN provided by the owner.
+- Under Pair another device, use a name such as Friend Laptop.
+- Click Create pairing code.
+
+The code works once and expires after ten minutes.
+
+
+6. PAIR THE COMPUTER
+
+Replace PAIRING_CODE and run this in the terminal:
+
+  npm run device:pair -- --controller=https://autobot-command-center.avgschnook.chatgpt.site --code=PAIRING_CODE --name="Friend Laptop"
+
+It should say: Paired Friend Laptop.
+
+
+7. START THE DEVICE BRIDGE
+
+Run:
+
+  npm run device
+
+Keep this terminal open during the test.
+
+
+8. CONNECT THE POSH TEST PAGE
+
+- Sign into POSH normally and complete OTP/CAPTCHA checks manually.
+- Open the organizer-owned test event and refresh once.
+- Find the AUTOBOT panel in the lower-right corner.
+- Leave Allow command center checked.
+- Confirm Friend Laptop appears online in the dashboard.
+- Run Inspection first. Inspection does not select or submit an RSVP.
+
+
+OPTIONAL AUTO-START
+
+After everything works, run:
+
+  npm run device:install
+
+For the current login session, still start the bridge with npm run device.
 
 
 IMPORTANT
 
-- The extension never includes or transfers your POSH login, OTP, event
-  password, browser session, or previous test locks.
-
-- Authentication, OTP, CAPTCHA/Cloudflare, and payment steps remain manual.
-
-- Use this only with the organizer-owned classroom test event.
-
-- If Chrome does not show Developer mode or Load unpacked, the school has
-  probably disabled unpacked extensions. Ask your professor or school IT to
-  allow this classroom extension. Do not attempt to bypass the restriction.
-
-
-REMOVING IT AFTER THE DEMONSTRATION
-
-Open chrome://extensions and click "Remove" under
-"AUTOBOT Owned-Event RSVP Lab".
+- Use only the organizer-owned free test event.
+- POSH login, OTP, CAPTCHA, event passwords, and payment data stay local.
+- Every computer can still operate independently using its local AUTOBOT panel.
