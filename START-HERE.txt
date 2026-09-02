@@ -21,7 +21,7 @@ Windows:
 - Click the File Explorer address bar, type powershell, and press Enter.
 
 Mac:
-- Open Terminal and type: cd 
+- Open Terminal, type cd, and then press the spacebar once.
 - Drag the extracted autobot folder into Terminal and press Enter.
 
 
