@@ -8,11 +8,13 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.10.0 includes an optional multi-device Command Center for a variable
+AUTOBOT v0.11.0 includes an optional multi-device Command Center for a variable
 fleet of 1–20 laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
-password delivery, readiness checks, rehearsal, arming, per-device results,
-stop, audit, and device-revocation capabilities.
+password delivery, remote event-page opening, readiness checks, rehearsal,
+arming, per-device results, a fleet directory, stop, audit, and device-revocation
+capabilities. It also recognizes POSH's post-RSVP update-preference dialog as a
+confirmed reservation.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -22,7 +24,8 @@ configuration records that POSH has approved the controlled automation test.
 
 Use these steps when adding a friend's computer to the hosted Command Center:
 
-1. Download the newest release ZIP from GitHub, then extract it.
+1. Download the newest release ZIP from GitHub, extract it, and open
+   `OPEN-FIRST-AUTOBOT-SETUP-GUIDE.pdf`. Its terminal commands are copyable.
 2. Install Google Chrome and the current Node.js LTS release.
 3. In the [AUTOBOT Command Center](https://autobot-command-center.avgschnook.chatgpt.site),
    start a two-hour enrollment window for the number of laptops being added.
@@ -33,8 +36,9 @@ Use these steps when adding a friend's computer to the hosted Command Center:
 5. In Chrome, open `chrome://extensions`, enable **Developer mode**, click
    **Load unpacked**, and select the extracted `extension` folder.
 6. Approve the laptop in the dashboard.
-7. Open the organizer-owned POSH test event in Chrome, refresh once, and leave
-   **Allow command center** checked in the AUTOBOT panel.
+7. Enter the current event URL in the dashboard, click **Select online**, and
+   click **Open event on selected devices**. Leave **Allow command center**
+   checked in the AUTOBOT panel.
 8. Confirm the laptop is ready in the fleet overview, then run a **Rehearsal**
    before attempting a controlled live test.
 
@@ -55,7 +59,7 @@ enrollment code works for the configured number of laptops for up to two hours;
 every enrolled laptop remains blocked until approved in the dashboard. POSH
 sign-in, OTP, and CAPTCHA/Cloudflare checks remain local and manual. The
 dashboard may deliver an event password encrypted separately for each selected
-v0.10.0 device.
+v0.11.0 device.
 
 ## Install
 
@@ -150,7 +154,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.10.0. On a POSH event page,
+Reload the unpacked extension after installing v0.11.0. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -168,12 +172,17 @@ Validate the controller's independent multi-device lease behavior with:
 npm run test:control
 ```
 
-For a live fleet test, first open the same event page on every participating
-laptop. In the dashboard, use **Select ready**, clear any laptop that
-will not participate, capture or enter the event URL and title, enter the
-password and release time once, and resolve every readiness message. The number
-shown on the **Activate devices** button is the exact number of one-use leases
-that will be issued.
+For a fleet test, enter the current event URL in the dashboard, use **Select
+online**, and click **Open event on selected devices**. Once the devices report
+the new page and title, use **Select ready**, clear any laptop that will not
+participate, enter the password and release time once, and resolve every
+readiness message. The number shown on the **Activate devices** button is the
+exact number of one-use leases that will be issued.
+
+The dashboard overview summarizes the latest run as confirmed/passed, waiting
+or review, and issues. The **Fleet directory** tab stores optional POSH account
+email, phone, and a secondary description for each laptop. Those fields remain
+dashboard-only and are never sent to the device or used by the automation.
 
 Pairings persist across restarts, so the computers can be connected the day
 before. Keep Chrome, the event tab, and the device bridge running near the test.

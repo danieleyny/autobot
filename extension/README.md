@@ -7,9 +7,9 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.10.0
+## Optional Command Center in v0.11.0
 
-The normal panel remains fully standalone. If the local v0.10.0 device bridge is
+The normal panel remains fully standalone. If the local v0.11.0 device bridge is
 running, the bottom of the panel shows the paired device name and a green
 connection indicator. **Allow command center** controls whether that device may
 accept central inspection, live-fleet, and stop commands.
@@ -19,8 +19,9 @@ Arm** and **Stop** buttons always remain available. If a local run replaces a
 pending managed command, the controller records a local override and withdraws
 the central run instead of silently allowing two executors.
 
-The Command Center can configure the event password and release time for any
-selected group of 1–20 approved devices. Each selected device receives its own one-use
+The Command Center can open a new organizer-owned event URL, configure the event
+password and release time, and coordinate any selected group of 1–20 approved
+devices. Each selected device receives its own one-use
 execution lease; unselected devices do nothing. Its browser encrypts the
 password separately with each device's public key, and only that device's local
 bridge decrypts it. The controller never receives a readable password. POSH
@@ -34,11 +35,11 @@ login, OTP, Cloudflare, browser sessions, and completion locks remain local.
 4. Click **Load unpacked**.
 5. Select this folder:
 
-   `/Users/danieleyny/Documents/AUTOBOT/extension`
+   `<extracted AUTOBOT folder>/extension`
 
 Pin the extension from Chrome's Extensions menu if desired. Clicking its toolbar
-icon opens a small popup; **Open Test Event** restores the POSH event tab if it
-was closed.
+icon opens a small popup; **Open Latest Event** restores the most recent event
+sent by the Command Center, or opens POSH if no event has been sent yet.
 
 ## Safe workflow
 
@@ -143,6 +144,10 @@ completion record for that event URL and ticket name. It will not retry the same
 combination, even if POSH's confirmation wording is not recognized. Verify the
 result under POSH **My Orders**. Use a newly created test event for another
 end-to-end demonstration.
+
+POSH may show a **Stay in the loop** dialog after a successful RSVP, offering
+email or text updates. The helper recognizes that specific post-RSVP dialog as
+confirmation without choosing either communication option.
 
 If you delete and relist tickets on the same organizer-owned test event, use
 **Reset this event's test locks** and confirm the warning. This clears completion

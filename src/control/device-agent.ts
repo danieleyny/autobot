@@ -10,6 +10,8 @@ type ControllerCommand = {
   payload: Record<string, unknown>;
 };
 
+const VERSION = "0.11.0";
+
 const file = configPath();
 const config = JSON.parse(await readFile(file, "utf8")) as DeviceConfig;
 if (!config.publicKeyPem || !config.privateKeyPem) {
@@ -25,6 +27,8 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Dev
 
 let extensionStatus: Record<string, unknown> = {};
 let extensionSeenAt = 0;
+let backgroundSeenAt = 0;
+let backgroundControlEnabled = true;
 let pendingCommand: ControllerCommand | null = null;
 let controllerOnline = false;
 let approvalPending = false;
@@ -48,16 +52,22 @@ async function controllerRequest(body: Record<string, unknown>) {
 async function heartbeat() {
   if (stopping) return;
   try {
-    const extensionConnected = Date.now() - extensionSeenAt < 4_000;
+    const pageConnected = Date.now() - extensionSeenAt < 4_000;
+    const extensionConnected = pageConnected || Date.now() - backgroundSeenAt < 4_000;
+    const pageStatus = pageConnected ? extensionStatus : {};
     const result = await controllerRequest({
       action: "poll",
-      version: "0.10.0",
+      version: VERSION,
       publicKey: config.publicKeyPem,
       status: {
-        ...extensionStatus,
+        ...pageStatus,
         bridgeOnline: true,
         extensionConnected,
-        controlConnected: extensionConnected && extensionStatus.controlEnabled !== false,
+        controlConnected:
+          extensionConnected &&
+          backgroundControlEnabled !== false &&
+          pageStatus.controlEnabled !== false,
+        pageReady: pageConnected && pageStatus.pageReady === true,
         bridgePort: port,
       },
     });
@@ -117,7 +127,7 @@ app.use((request, response, next) => {
     response.sendStatus(204);
     return;
   }
-  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== "0.10.0") {
+  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== VERSION) {
     response.status(401).json({ error: "Extension bridge version is missing." });
     return;
   }
@@ -142,7 +152,24 @@ app.post("/extension/poll", (request, response) => {
     connected: controllerOnline,
     approvalPending,
     deviceName: config.name,
-    command: extensionStatus.controlEnabled === false ? null : pendingCommand,
+    command:
+      extensionStatus.controlEnabled === false || pendingCommand?.type === "open-event"
+        ? null
+        : pendingCommand,
+  });
+});
+
+app.post("/extension/navigation-poll", (request, response) => {
+  backgroundSeenAt = Date.now();
+  backgroundControlEnabled = request.body?.controlEnabled !== false;
+  response.json({
+    connected: controllerOnline,
+    approvalPending,
+    deviceName: config.name,
+    command:
+      backgroundControlEnabled && pendingCommand?.type === "open-event"
+        ? pendingCommand
+        : null,
   });
 });
 
@@ -167,6 +194,8 @@ app.post("/extension/report", async (request, response) => {
         "submitted",
         "submitted-unconfirmed",
         "confirmed",
+        "already-reserved",
+        "event-opened",
         "local-override",
       ].includes(String(request.body?.phase))
     ) {
@@ -179,7 +208,7 @@ app.post("/extension/report", async (request, response) => {
 });
 
 const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`AUTOBOT device bridge v0.10.0: ${config.name}`);
+  console.log(`AUTOBOT device bridge v${VERSION}: ${config.name}`);
   console.log(`Local extension bridge: http://127.0.0.1:${port}`);
   console.log(`Controller: ${config.controllerUrl}`);
 });

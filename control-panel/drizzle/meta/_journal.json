@@ -36,6 +36,13 @@
       "when": 1788328896871,
       "tag": "0004_illegal_white_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788361958763,
+      "tag": "0005_shiny_hobgoblin",
+      "breakpoints": true
     }
   ]
 }

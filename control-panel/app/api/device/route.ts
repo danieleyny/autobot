@@ -33,30 +33,34 @@ async function authenticateDevice(request: NextRequest): Promise<DeviceAuth | nu
     .first<DeviceAuth>();
 }
 
-async function finalizeLiveRunIfSettled(runId: string, ownerId: string, timestamp: number) {
+async function finalizeRunIfSettled(runId: string, ownerId: string, timestamp: number) {
   const run = await getD1()
     .prepare("SELECT status, mode FROM runs WHERE id = ? AND owner_id = ? LIMIT 1")
     .bind(runId, ownerId)
     .first<{ status: string; mode: string }>();
-  if (!run || run.mode !== "live" || run.status === "stopped") return;
+  if (!run || run.status === "stopped") return;
+
+  const role = run.mode === "live" ? "executor" : "inspection";
+  const terminalStatuses =
+    run.mode === "live"
+      ? ["confirmed", "submitted-unconfirmed", "already-reserved", "failed", "local-override", "stopped"]
+      : ["inspection-complete", "failed", "local-override", "stopped"];
+  const terminalPlaceholders = terminalStatuses.map(() => "?").join(",");
 
   const summary = await getD1()
     .prepare(
       `SELECT
          COUNT(*) AS total,
-         SUM(CASE WHEN status IN
-           ('submitted', 'confirmed', 'submitted-unconfirmed', 'failed', 'local-override', 'stopped')
-           THEN 1 ELSE 0 END) AS terminal,
-         SUM(CASE WHEN status IN ('failed', 'local-override', 'stopped') THEN 1 ELSE 0 END) AS failed
-       FROM run_devices WHERE run_id = ? AND role = 'executor'`,
+         SUM(CASE WHEN status IN (${terminalPlaceholders}) THEN 1 ELSE 0 END) AS terminal
+       FROM run_devices WHERE run_id = ? AND role = ?`,
     )
-    .bind(runId)
-    .first<{ total: number; terminal: number; failed: number }>();
+    .bind(...terminalStatuses, runId, role)
+    .first<{ total: number; terminal: number }>();
   const total = Number(summary?.total ?? 0);
   if (!total || Number(summary?.terminal ?? 0) < total) return;
   await getD1()
-    .prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ? AND owner_id = ?")
-    .bind(Number(summary?.failed ?? 0) > 0 ? "blocked" : "completed", timestamp, runId, ownerId)
+    .prepare("UPDATE runs SET status = 'completed', updated_at = ? WHERE id = ? AND owner_id = ?")
+    .bind(timestamp, runId, ownerId)
     .run();
 }
 
@@ -250,8 +254,10 @@ export async function POST(request: NextRequest) {
             .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
             .bind(phase, runId, device.id),
         ]);
-        await finalizeLiveRunIfSettled(runId, device.owner_id, timestamp);
-      } else if (runId && ["failed", "local-override", "stopped"].includes(phase)) {
+        if (phase !== "submitted") {
+          await finalizeRunIfSettled(runId, device.owner_id, timestamp);
+        }
+      } else if (runId && ["already-reserved", "failed", "local-override", "stopped"].includes(phase)) {
         await getD1().batch([
           getD1()
             .prepare(
@@ -263,26 +269,14 @@ export async function POST(request: NextRequest) {
             .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
             .bind(phase, runId, device.id),
         ]);
-        await finalizeLiveRunIfSettled(runId, device.owner_id, timestamp);
+        await finalizeRunIfSettled(runId, device.owner_id, timestamp);
       } else if (runId) {
         await getD1()
           .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
           .bind(phase.slice(0, 60), runId, device.id)
           .run();
         if (phase === "inspection-complete") {
-          const remaining = await getD1()
-            .prepare(
-              `SELECT COUNT(*) AS count FROM run_devices
-               WHERE run_id = ? AND role = 'inspection' AND status != 'inspection-complete'`,
-            )
-            .bind(runId)
-            .first<{ count: number }>();
-          if (Number(remaining?.count ?? 1) === 0) {
-            await getD1()
-              .prepare("UPDATE runs SET status = 'completed', updated_at = ? WHERE id = ? AND owner_id = ?")
-              .bind(timestamp, runId, device.owner_id)
-              .run();
-          }
+          await finalizeRunIfSettled(runId, device.owner_id, timestamp);
         }
       }
 

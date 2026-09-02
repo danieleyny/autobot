@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo AUTOBOT v0.10.0 Windows Setup
+echo AUTOBOT v0.11.0 Windows Setup
 echo ===============================
 where node >nul 2>nul
 if errorlevel 1 (
@@ -18,6 +18,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+
+echo Open OPEN-FIRST-AUTOBOT-SETUP-GUIDE.pdf for the complete copy-and-paste checklist.
 
 if exist "%LOCALAPPDATA%\AUTOBOT\device.json" goto paired
 
@@ -39,4 +41,3 @@ echo %~dp0extension
 echo.
 echo Keep this window open during testing. Press Ctrl+C to stop the bridge.
 call npm run device
-

@@ -21,7 +21,7 @@ console.log(`Simulating ${config.name}. Press Ctrl+C to stop.`);
 setInterval(async () => {
   const result = await request({
     action: "poll",
-    version: "0.10.0-sim",
+    version: "0.11.0-sim",
     publicKey: config.publicKeyPem,
     status: {
       bridgeOnline: true,

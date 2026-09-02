@@ -2,7 +2,7 @@
 set -e
 cd "${0:A:h}"
 
-echo "AUTOBOT v0.10.0 Mac Setup"
+echo "AUTOBOT v0.11.0 Mac Setup"
 echo "=========================="
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required. Install the current LTS release from https://nodejs.org and run this file again."
@@ -12,6 +12,8 @@ fi
 
 echo "Installing AUTOBOT files..."
 npm install
+
+echo "Open OPEN-FIRST-AUTOBOT-SETUP-GUIDE.pdf for the complete copy-and-paste checklist."
 
 DEVICE_CONFIG="$HOME/Library/Application Support/AUTOBOT/device.json"
 if [[ ! -f "$DEVICE_CONFIG" ]]; then
@@ -31,4 +33,3 @@ echo "$PWD/extension"
 echo
 echo "Keep this window open during testing. Press Control-C to stop the bridge."
 npm run device
-

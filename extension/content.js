@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.10.0";
+  const VERSION = "0.11.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -78,7 +78,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.10.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.11.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -350,6 +350,16 @@
     return matches.filter(
       (element) =>
         !matches.some((other) => other !== element && element.contains(other))
+    );
+  }
+
+  function postRsvpPreferenceDialogVisible() {
+    const bodyText = normalize(document.body.innerText);
+    return (
+      /stay in the loop/i.test(bodyText) &&
+      /event updates and promotional texts/i.test(bodyText) &&
+      exactButton("No, email me instead").length === 1 &&
+      exactButton("Yes, text me updates", "Yes, text me updates →").length === 1
     );
   }
 
@@ -840,6 +850,7 @@
 
     const outcome = await waitFor(() => {
       const bodyText = normalize(document.body.innerText);
+      if (postRsvpPreferenceDialogVisible()) return "success";
       if (SUCCESS_PATTERN.test(bodyText)) return "success";
       if (hasNewSoldOutEvidence(config)) return "soldout";
       if (LOGIN_PATTERN.test(bodyText)) return "login";
@@ -896,6 +907,7 @@
     try {
       finalResult = await waitFor(() => {
         const bodyText = normalize(document.body.innerText);
+        if (postRsvpPreferenceDialogVisible()) return "success";
         if (SUCCESS_PATTERN.test(bodyText)) return "success";
         if (hasNewSoldOutEvidence(config)) return "soldout";
         if (DUPLICATE_PATTERN.test(bodyText)) return "duplicate";

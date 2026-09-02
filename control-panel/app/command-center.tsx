@@ -5,6 +5,9 @@ import { useCallback, useEffect, useState } from "react";
 type Device = {
   id: string;
   name: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  description: string | null;
   version: string;
   mode: "local" | "managed";
   approvalStatus: "pending" | "approved";
@@ -72,7 +75,7 @@ const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/late
 function supportsFleetExecution(version: string) {
   const match = /^(\d+)\.(\d+)\./.exec(version);
   if (!match) return false;
-  return Number(match[1]) > 0 || Number(match[2]) >= 10;
+  return Number(match[1]) > 0 || Number(match[2]) >= 11;
 }
 
 function sameEventPage(left: unknown, right: string) {
@@ -90,7 +93,7 @@ function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
   if (device.approvalStatus !== "approved") return "Waiting for approval";
   if (!device.online) return "Offline";
   if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
-  if (!supportsFleetExecution(device.version)) return "Update to v0.10.0";
+  if (!supportsFleetExecution(device.version)) return "Update to v0.11.0";
   if (!device.encryptionReady) return "Password security not ready";
   if (device.state.pageReady !== true) return "Open the event page";
   if (!sameEventPage(device.state.eventUrl, eventUrl)) return "Wrong event page";
@@ -145,7 +148,11 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<"operations" | "directory">("operations");
   const [selected, setSelected] = useState<string[]>([]);
+  const [profileDrafts, setProfileDrafts] = useState<
+    Record<string, { contactEmail: string; contactPhone: string; description: string }>
+  >({});
   const [pairLabel, setPairLabel] = useState("Classroom fleet");
   const [enrollmentMax, setEnrollmentMax] = useState(20);
   const [pairing, setPairing] = useState<{
@@ -155,8 +162,8 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     maxDevices: number;
   } | null>(null);
   const [mode, setMode] = useState<"inspection" | "live">("inspection");
-  const [eventUrl, setEventUrl] = useState("https://posh.vip/e/test-release");
-  const [eventTitle, setEventTitle] = useState("AUTOBOT Classroom Test Drop");
+  const [eventUrl, setEventUrl] = useState("");
+  const [eventTitle, setEventTitle] = useState("");
   const [eventPassword, setEventPassword] = useState("");
   const [releaseAt, setReleaseAt] = useState("");
   const [ticketStrategy, setTicketStrategy] = useState<"any" | "first" | "second">("any");
@@ -175,6 +182,19 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     const next = (await response.json()) as ControlState;
     setClockOffsetMs(Date.now() - next.serverTime);
     setState(next);
+    setProfileDrafts((current) => {
+      const merged = { ...current };
+      for (const device of next.devices) {
+        if (!merged[device.id]) {
+          merged[device.id] = {
+            contactEmail: device.contactEmail ?? "",
+            contactPhone: device.contactPhone ?? "",
+            description: device.description ?? "",
+          };
+        }
+      }
+      return merged;
+    });
     setSelected((current) => current.filter((id) => next.devices.some((device) => device.id === id && device.online)));
     setLoading(false);
   }, []);
@@ -225,6 +245,21 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     : [];
   const latestRunStatusByDevice = new Map(
     latestRunDevices.map((device) => [device.device_id, device.status]),
+  );
+  const latestConfirmed = latestRunDevices.filter((device) =>
+    latestRun?.mode === "inspection"
+      ? device.status === "inspection-complete"
+      : device.status === "confirmed",
+  ).length;
+  const latestNeedsReview = latestRunDevices.filter((device) =>
+    ["submitted", "submitted-unconfirmed"].includes(device.status),
+  ).length;
+  const latestIssues = latestRunDevices.filter((device) =>
+    ["already-reserved", "failed", "local-override", "stopped"].includes(device.status),
+  ).length;
+  const latestInProgress = Math.max(
+    0,
+    latestRunDevices.length - latestConfirmed - latestNeedsReview - latestIssues,
   );
 
   const post = async (payload: Record<string, unknown>) => {
@@ -353,6 +388,63 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       setNotice("Event details saved in this dashboard browser. Password and release time were not saved.");
     } catch {
       setNotice("This browser blocked local event-detail storage. The current form still works for this session.");
+    }
+  };
+
+  const openEventOnSelected = async () => {
+    if (!selected.length) {
+      setNotice("Select at least one online device first. Use Select online to choose the connected fleet.");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({ action: "open-event", eventUrl, deviceIds: selected });
+      const count = Number(result.devices ?? selected.length);
+      setNotice(
+        `Opening this event on ${count} selected device${count === 1 ? "" : "s"}. ` +
+          "Keep Chrome open; sleeping extension workers may take up to 30 seconds to wake.",
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateProfileDraft = (
+    deviceId: string,
+    field: "contactEmail" | "contactPhone" | "description",
+    value: string,
+  ) => {
+    setProfileDrafts((current) => ({
+      ...current,
+      [deviceId]: {
+        contactEmail: current[deviceId]?.contactEmail ?? "",
+        contactPhone: current[deviceId]?.contactPhone ?? "",
+        description: current[deviceId]?.description ?? "",
+        [field]: value,
+      },
+    }));
+  };
+
+  const saveDeviceProfile = async (device: Device) => {
+    const profile = profileDrafts[device.id] ?? {
+      contactEmail: "",
+      contactPhone: "",
+      description: "",
+    };
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "update-device-profile", deviceId: device.id, ...profile });
+      setNotice(`${device.name}'s account details were saved.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -511,6 +603,22 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#69736b]">Control state</p>
             <p className="mt-0.5 font-semibold">{activeRun ? `${activeRun.title} · ${activeRun.status}` : "No active run"}</p>
+            <div className="mt-2 flex w-fit rounded-full border border-[#cbd2c7] bg-[#f3f5ef] p-1 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setView("operations")}
+                className={`rounded-full px-3 py-1.5 ${view === "operations" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
+              >
+                Operations
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("directory")}
+                className={`rounded-full px-3 py-1.5 ${view === "directory" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
+              >
+                Fleet directory
+              </button>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
             <span className="rounded-full bg-[#eaf4d9] px-3 py-1.5 text-[#35511e]">{onlineDevices.length} online</span>
@@ -533,13 +641,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       {outdatedDevices.length > 0 ? (
         <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
-            <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.10.0 update before a live fleet run.</span>
+        <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.11.0 update for remote event opening and current live-test recognition.</span>
             <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download current release</a>
           </div>
         </div>
       ) : null}
 
-      <div className="mx-auto grid max-w-[1500px] gap-5 px-5 py-6 lg:grid-cols-[310px_minmax(0,1fr)] lg:px-8">
+      <div className={`${view === "operations" ? "grid" : "hidden"} mx-auto max-w-[1500px] gap-5 px-5 py-6 lg:grid-cols-[310px_minmax(0,1fr)] lg:px-8`}>
         <aside className="space-y-4">
           <div className="flex items-end justify-between">
             <div>
@@ -677,6 +785,40 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         </aside>
 
         <section className="space-y-5">
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Dashboard overview</p>
+                <h2 className="mt-1 text-xl font-semibold">Fleet at a glance</h2>
+              </div>
+              <span className="text-xs font-semibold text-[#69736b]">
+                {latestRun ? `${latestRun.eventTitle} · ${latestRun.mode === "inspection" ? "rehearsal" : "live test"}` : "No run history yet"}
+              </span>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-xl bg-[#f3f5ef] p-4">
+                <p className="text-2xl font-semibold">{onlineDevices.length}<span className="text-sm text-[#7b847c]">/{state.devices.length}</span></p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em] text-[#69736b]">Online now</p>
+              </div>
+              <div className="rounded-xl bg-[#f3f5ef] p-4">
+                <p className="text-2xl font-semibold">{readySelectedDevices.length}<span className="text-sm text-[#7b847c]">/{selected.length}</span></p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em] text-[#69736b]">Selected ready</p>
+              </div>
+              <div className="rounded-xl bg-[#eff8e4] p-4 text-[#35511e]">
+                <p className="text-2xl font-semibold">{latestConfirmed}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">{latestRun?.mode === "inspection" ? "Passed" : "Confirmed"}</p>
+              </div>
+              <div className="rounded-xl bg-[#fff7e8] p-4 text-[#79501f]">
+                <p className="text-2xl font-semibold">{latestNeedsReview + latestInProgress}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">Waiting / review</p>
+              </div>
+              <div className="rounded-xl bg-[#fff1ec] p-4 text-[#8b4f3f]">
+                <p className="text-2xl font-semibold">{latestIssues}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">Issues</p>
+              </div>
+            </div>
+          </article>
+
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,.65fr)]">
             <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
@@ -696,13 +838,21 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
                 <label className="field sm:col-span-2">
                   <span>Organizer-owned POSH event URL</span>
-                  <input value={eventUrl} onChange={(event) => setEventUrl(event.target.value)} />
+                  <input value={eventUrl} onChange={(event) => setEventUrl(event.target.value)} placeholder="https://posh.vip/e/your-test-event" />
                 </label>
                 <label className="field sm:col-span-2">
                   <span>Exact event title</span>
-                  <input value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} />
+                  <input value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} placeholder="Exact title shown on the event page" />
                 </label>
                 <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <button
+                    type="button"
+                    disabled={busy || Boolean(activeRun) || selected.length === 0}
+                    onClick={openEventOnSelected}
+                    className="rounded-full bg-[#b8ff5a] px-4 py-2 text-xs font-bold text-[#172018] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Open event on {selected.length || "selected"} device{selected.length === 1 ? "" : "s"}
+                  </button>
                   <button
                     type="button"
                     onClick={useOpenEvent}
@@ -717,6 +867,9 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   >
                     Save event details
                   </button>
+                  <p className="w-full text-[11px] leading-5 text-[#6b746c]">
+                    To open this URL across the connected fleet, click Select online on the left, then use the green button. Chrome must be running on each laptop.
+                  </p>
                 </div>
                 <label className="field sm:col-span-2">
                   <span>Event password (optional)</span>
@@ -883,6 +1036,91 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           </article>
         </section>
       </div>
+
+      <section className={`${view === "directory" ? "block" : "hidden"} mx-auto max-w-[1500px] px-5 py-6 lg:px-8`}>
+        <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="eyebrow">Fleet directory</p>
+              <h2 className="mt-1 text-2xl font-semibold tracking-tight">Accounts and laptop notes</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-[#69736b]">
+                Add optional POSH account details and a secondary label for each laptop. These details stay in the protected dashboard database and are never sent to the device or used during a run.
+              </p>
+            </div>
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-xs font-semibold text-[#4f5b51]">
+              {state.devices.length} paired
+            </span>
+          </div>
+
+          <div className="mt-6 grid gap-4 xl:grid-cols-2">
+            {state.devices.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#b8c0b5] p-6 text-sm text-[#69736b]">
+                Pair a laptop first, then its optional account fields will appear here.
+              </div>
+            ) : (
+              state.devices.map((device) => {
+                const profile = profileDrafts[device.id] ?? {
+                  contactEmail: device.contactEmail ?? "",
+                  contactPhone: device.contactPhone ?? "",
+                  description: device.description ?? "",
+                };
+                return (
+                  <div key={device.id} className="rounded-2xl border border-[#d7dcd3] bg-[#fbfcfa] p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="font-semibold">{device.name}</h3>
+                        <p className="mt-1 text-xs text-[#69736b]">
+                          {device.version} · {device.online ? "Online" : "Offline"}
+                        </p>
+                      </div>
+                      <span className={`device-dot ${device.online ? "ready" : "local"}`} />
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <label className="field">
+                        <span>POSH account email</span>
+                        <input
+                          type="email"
+                          maxLength={254}
+                          value={profile.contactEmail}
+                          onChange={(event) => updateProfileDraft(device.id, "contactEmail", event.target.value)}
+                          placeholder="account@example.com"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Account phone</span>
+                        <input
+                          type="tel"
+                          maxLength={40}
+                          value={profile.contactPhone}
+                          onChange={(event) => updateProfileDraft(device.id, "contactPhone", event.target.value)}
+                          placeholder="Optional"
+                        />
+                      </label>
+                      <label className="field sm:col-span-2">
+                        <span>Secondary label / description</span>
+                        <input
+                          maxLength={200}
+                          value={profile.description}
+                          onChange={(event) => updateProfileDraft(device.id, "description", event.target.value)}
+                          placeholder="Example: Sam's account, backup laptop"
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => saveDeviceProfile(device)}
+                      className="mt-4 rounded-full bg-[#172018] px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
+                    >
+                      Save account details
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </article>
+      </section>
     </main>
   );
 }

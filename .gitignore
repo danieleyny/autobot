@@ -5,6 +5,8 @@ tmp-social-preview/
 artifacts/
 test-results/
 playwright-report/
+tmp/
+__pycache__/
 config/live-event*.json
 config/device.json
 .DS_Store

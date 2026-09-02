@@ -1,11 +1,11 @@
-AUTOBOT RSVP LAB v0.10.0 — SCHOOL COMPUTER SETUP
+AUTOBOT RSVP LAB v0.11.0 - SCHOOL COMPUTER SETUP
 =================================================
 
 WHAT YOU NEED
 
 - Google Chrome
 - Permission to enable Chrome Developer mode
-- The extracted AUTOBOT-v0.10.0 folder
+- The extracted AUTOBOT-System-v0.11.0 folder
 
 
 INSTALL — ABOUT 2 MINUTES
@@ -31,7 +31,7 @@ INSTALL — ABOUT 2 MINUTES
 8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
 
 9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.10.0.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.11.0.
 
 
 OPTIONAL COMMAND CENTER
@@ -45,8 +45,9 @@ OPTIONAL COMMAND CENTER
   and stop commands. Uncheck it whenever you want this computer to
   operate only from its own local panel.
 
-- The Command Center can securely send the event password and release time to
-  every selected device. The password is encrypted separately for each device.
+- The Command Center can open the current event and securely send the event
+  password and release time to every selected device. The password is encrypted
+  separately for each device.
 - Only selected devices participate. Each selected laptop receives one
   independent, one-use execution lease, whether the test uses 1 or 20 laptops.
 - POSH login, OTP, and CAPTCHA checks remain local and manual.

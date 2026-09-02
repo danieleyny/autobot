@@ -1,4 +1,4 @@
-AUTOBOT v0.10.0 — SECOND COMPUTER QUICK START
+AUTOBOT v0.11.0 - SECOND COMPUTER QUICK START
 ==============================================
 
 WHAT YOU NEED
@@ -7,6 +7,12 @@ WHAT YOU NEED
 - Node.js LTS from https://nodejs.org
 - Permission to enable Chrome Developer mode
 - An enrollment or one-time code from the AUTOBOT Command Center
+
+OPEN THIS FIRST
+
+Open OPEN-FIRST-AUTOBOT-SETUP-GUIDE.pdf in this package. It contains the full
+Windows and Mac instructions, browser-popup settings, and copyable Terminal and
+PowerShell commands.
 
 
 1. DOWNLOAD AND EXTRACT
@@ -65,7 +71,7 @@ Run:
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.10.0 appears.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.11.0 appears.
 
 
 6. PAIR THE COMPUTER
@@ -89,7 +95,8 @@ Keep this terminal open during the test.
 8. CONNECT THE POSH TEST PAGE
 
 - Sign into POSH normally and complete OTP/CAPTCHA checks manually.
-- Open the organizer-owned test event and refresh once.
+- In the dashboard, enter the organizer-owned event URL, click Select online,
+  and click Open event on selected devices.
 - Find the AUTOBOT panel in the lower-right corner.
 - Leave Allow command center checked.
 - Approve Friend Laptop in the dashboard.

@@ -81,7 +81,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.10.0-test",
+    version: "0.11.0-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -97,7 +97,7 @@ async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Cl
     "/api/device",
     {
       action: "poll",
-      version: "0.10.0-test",
+      version: "0.11.0-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -168,7 +168,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.10.0-test",
+      version: "0.11.0-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },
@@ -177,6 +177,49 @@ try {
   await jsonRequest("/api/control", { action: "approve-device", deviceId: executorTwo.id }, { cookie });
   await poll(executorOne.token, executorOne.keys, eventTitle);
   await poll(executorTwo.token, executorTwo.keys, eventTitle);
+
+  await jsonRequest(
+    "/api/control",
+    {
+      action: "update-device-profile",
+      deviceId: executorOne.id,
+      contactEmail: "executor.one@example.com",
+      contactPhone: "+1 212 555 0100",
+      description: "Primary test account",
+    },
+    { cookie },
+  );
+  const directoryState = await jsonRequest("/api/control", null, { cookie });
+  const directoryDevice = (directoryState.devices as Array<Record<string, unknown>>).find(
+    (item) => item.id === executorOne.id,
+  );
+  assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
+  assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
+  assert.equal(directoryDevice?.description, "Primary test account");
+
+  const nextEventUrl = "https://posh.vip/e/next-test-event";
+  await jsonRequest(
+    "/api/control",
+    { action: "open-event", eventUrl: nextEventUrl, deviceIds: [executorOne.id, executorTwo.id] },
+    { cookie },
+  );
+  const navigationOne = await poll(executorOne.token, executorOne.keys, eventTitle);
+  const navigationTwo = await poll(executorTwo.token, executorTwo.keys, eventTitle);
+  const navigationOneCommand = navigationOne.command as Record<string, unknown>;
+  const navigationTwoCommand = navigationTwo.command as Record<string, unknown>;
+  assert.equal(navigationOneCommand.type, "open-event");
+  assert.equal(navigationTwoCommand.type, "open-event");
+  assert.equal((navigationOneCommand.payload as Record<string, unknown>).eventUrl, nextEventUrl);
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: navigationOneCommand.id, phase: "event-opened" },
+    { token: executorOne.token },
+  );
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: navigationTwoCommand.id, phase: "event-opened" },
+    { token: executorTwo.token },
+  );
 
   const created = await jsonRequest(
     "/api/control",
@@ -286,8 +329,35 @@ try {
   );
 
   const finalState = await jsonRequest("/api/control", null, { cookie });
-  const run = (finalState.runs as Array<Record<string, unknown>>).find((item) => item.id === runId);
-  const leases = (finalState.leases as Array<Record<string, unknown>>).filter((item) => item.run_id === runId);
+  const submittedRun = (finalState.runs as Array<Record<string, unknown>>).find((item) => item.id === runId);
+  assert.equal(submittedRun?.status, "armed");
+
+  await jsonRequest(
+    "/api/device",
+    {
+      action: "report",
+      commandId: executorOneCommand.id,
+      runId,
+      phase: "confirmed",
+      detail: { test: true },
+    },
+    { token: executorOne.token },
+  );
+  await jsonRequest(
+    "/api/device",
+    {
+      action: "report",
+      commandId: executorTwoCommand.id,
+      runId,
+      phase: "submitted-unconfirmed",
+      detail: { test: true },
+    },
+    { token: executorTwo.token },
+  );
+
+  const settledState = await jsonRequest("/api/control", null, { cookie });
+  const run = (settledState.runs as Array<Record<string, unknown>>).find((item) => item.id === runId);
+  const leases = (settledState.leases as Array<Record<string, unknown>>).filter((item) => item.run_id === runId);
   assert.equal(run?.status, "completed");
   assert.equal(leases.length, 2);
   assert.ok(leases.every((lease) => lease.status === "submitted"));
@@ -299,7 +369,7 @@ try {
   );
   const afterRemoval = await jsonRequest("/api/control", null, { cookie });
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
-  console.log("Control integration passed: batch enrollment approval, capacity limit, encrypted two-device fleet, reliable redelivery, results, and revocation.");
+  console.log("Control integration passed: enrollment, device directory, remote event opening, encrypted fleet delivery, confirmed/review results, and revocation.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }
