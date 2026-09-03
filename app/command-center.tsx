@@ -312,7 +312,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         kind: "enrollment",
         maxDevices: Number(result.maxDevices),
       });
-      setNotice("Two-hour enrollment started. Approve each laptop after it appears below.");
+      setNotice("48-hour enrollment started. Approve each laptop after it appears below.");
       await refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -752,7 +752,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
           <div className="rounded-2xl border border-[#d7dcd3] bg-white p-4">
             <p className="text-sm font-semibold">Enroll laptops</p>
-            <p className="mt-1 text-xs leading-5 text-[#6b746c]">One two-hour code can enroll the whole classroom fleet. Every new laptop still requires approval here.</p>
+            <p className="mt-1 text-xs leading-5 text-[#6b746c]">One 48-hour code can enroll the whole classroom fleet. Every new laptop still requires approval here.</p>
             <label className="field mt-3">
               <span>Enrollment label</span>
               <input value={pairLabel} onChange={(event) => setPairLabel(event.target.value)} />
@@ -767,13 +767,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 onChange={(event) => setEnrollmentMax(Math.min(20, Math.max(1, Number(event.target.value) || 1)))}
               />
             </label>
-            <button disabled={busy} onClick={createEnrollment} className="mt-3 w-full rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Start 2-hour enrollment</button>
+            <button disabled={busy} onClick={createEnrollment} className="mt-3 w-full rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Start 48-hour enrollment</button>
             <button disabled={busy} onClick={createPairing} className="mt-2 w-full rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-50">Create one-time code instead</button>
             {pairing && (
               <div className="mt-3 rounded-xl bg-[#172018] p-3 text-center text-white">
                 <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#aeb8af]">{pairing.kind === "enrollment" ? `Enrollment code · up to ${pairing.maxDevices}` : "One-time code"}</p>
                 <p className="mt-1 font-mono text-2xl font-black tracking-[0.18em] text-[#b8ff5a]">{pairing.code}</p>
-                <p className="mt-1 text-[10px] text-[#aeb8af]">Expires {new Date(pairing.expiresAt).toLocaleTimeString()}</p>
+                <p className="mt-1 text-[10px] text-[#aeb8af]">Expires {new Date(pairing.expiresAt).toLocaleString()}</p>
                 <button type="button" onClick={copySetupCommand} className="mt-3 rounded-full border border-[#515d53] px-3 py-1.5 text-[11px] font-bold text-white">Copy setup command</button>
               </div>
             )}
