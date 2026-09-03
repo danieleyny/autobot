@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { singleFlight, startDashboardPolling } from "./dashboard-polling";
 
 type Device = {
   id: string;
@@ -172,7 +173,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [liveConfirmation, setLiveConfirmation] = useState("");
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
 
-  const refresh = useCallback(async () => {
+  const refreshState = useCallback(async () => {
     const response = await fetch("/api/control", { cache: "no-store" });
     if (response.status === 401) {
       window.location.assign("/login");
@@ -198,19 +199,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     setSelected((current) => current.filter((id) => next.devices.some((device) => device.id === id && device.online)));
     setLoading(false);
   }, []);
+  const refresh = useMemo(() => singleFlight(refreshState), [refreshState]);
 
   useEffect(() => {
-    const initialTimer = window.setTimeout(() => {
-      refresh().catch((error) => {
-        setNotice(error instanceof Error ? error.message : String(error));
-        setLoading(false);
-      });
-    }, 0);
-    const timer = window.setInterval(() => refresh().catch(() => {}), 2_000);
-    return () => {
-      window.clearTimeout(initialTimer);
-      window.clearInterval(timer);
-    };
+    return startDashboardPolling(refresh, document, window, (error) => {
+      setNotice(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    });
   }, [refresh]);
 
   useEffect(() => {

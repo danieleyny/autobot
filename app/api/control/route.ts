@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { audit, ensureControlSchema, nowMs, parseJson, randomPairingCode, sha256 } from "../../../db/control";
 import { getD1 } from "../../../db";
+import { CONTROLLER_REVISION, isDeviceOnline } from "../../../db/device-presence";
 import {
   CONTROLLER_OWNER_ID,
   isSameOriginRequest,
@@ -158,7 +159,7 @@ export async function GET() {
     ).bind(user.userId),
   ]);
 
-  const onlineCutoff = nowMs() - 7_500;
+  const presenceCheckedAt = nowMs();
   const devices = (deviceResult.results as unknown as DeviceRow[]).map((device) => ({
     id: device.id,
     name: device.name,
@@ -172,7 +173,7 @@ export async function GET() {
     encryptionPublicKey: device.public_key,
     encryptionReady: Boolean(device.public_key),
     lastSeenAt: device.last_seen_at,
-    online: Boolean(device.last_seen_at && device.last_seen_at >= onlineCutoff),
+    online: isDeviceOnline(device.last_seen_at, presenceCheckedAt),
     createdAt: device.created_at,
   }));
   const runs = (runResult.results as unknown as RunRow[]).map((run) => ({
@@ -196,6 +197,7 @@ export async function GET() {
   }));
 
   return NextResponse.json({
+    controllerRevision: CONTROLLER_REVISION,
     user: { displayName: user.displayName, email: user.email },
     devices,
     runs,
@@ -352,7 +354,7 @@ export async function POST(request: NextRequest) {
         if (selectedDevices.results.some((device) => device.approval_status !== "approved")) {
           throw new Error("Approve every selected device before opening an event.");
         }
-        if (selectedDevices.results.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
+        if (selectedDevices.results.some((device) => !isDeviceOnline(device.last_seen_at, nowMs()))) {
           throw new Error("Every selected device must be online before opening an event.");
         }
         const needsUpdate = selectedDevices.results.filter((device) => !supportsFleetExecution(device.version));
@@ -512,7 +514,7 @@ export async function POST(request: NextRequest) {
         if (deviceStates.some((device) => device.approval_status !== "approved")) {
           throw new Error("Approve every selected device before arming.");
         }
-        if (deviceStates.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 7_500)) {
+        if (deviceStates.some((device) => !isDeviceOnline(device.last_seen_at, nowMs()))) {
           throw new Error("Every selected device must be online before arming.");
         }
         if (deviceStates.some((device) => device.state.controlConnected !== true)) {
