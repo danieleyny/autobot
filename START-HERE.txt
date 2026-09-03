@@ -1,4 +1,4 @@
-AUTOBOT v0.11.0 - SECOND COMPUTER QUICK START
+AUTOBOT v0.11.1 - SECOND COMPUTER QUICK START
 ==============================================
 
 WHAT YOU NEED
@@ -24,10 +24,10 @@ On GitHub, click Code, then Download ZIP. Double-click the ZIP to extract it.
 
 - Open https://autobot-command-center.avgschnook.chatgpt.site
 - Enter the dashboard PIN provided by the owner.
-- Start a two-hour enrollment for the planned number of laptops, or create a
+- Start a 48-hour enrollment for the planned number of laptops, or create a
   one-time code.
 
-An enrollment code works for the selected number of laptops for two hours.
+An enrollment code works for the selected number of laptops for 48 hours.
 Each enrolled laptop must be approved in the dashboard. A one-time code still
 works once and expires after ten minutes.
 
@@ -71,7 +71,7 @@ Run:
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.11.0 appears.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.11.1 appears.
 
 
 6. PAIR THE COMPUTER

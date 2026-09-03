@@ -1,11 +1,11 @@
-AUTOBOT RSVP LAB v0.11.0 - SCHOOL COMPUTER SETUP
+AUTOBOT RSVP LAB v0.11.1 - SCHOOL COMPUTER SETUP
 =================================================
 
 WHAT YOU NEED
 
 - Google Chrome
 - Permission to enable Chrome Developer mode
-- The extracted AUTOBOT-System-v0.11.0 folder
+- The extracted AUTOBOT-System-v0.11.1 folder
 
 
 INSTALL — ABOUT 2 MINUTES
@@ -31,7 +31,7 @@ INSTALL — ABOUT 2 MINUTES
 8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
 
 9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.11.0.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.11.1.
 
 
 OPTIONAL COMMAND CENTER

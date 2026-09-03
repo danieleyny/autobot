@@ -251,7 +251,7 @@ export async function POST(request: NextRequest) {
         const code = randomPairingCode();
         const codeHash = await sha256(code);
         const createdAt = nowMs();
-        const expiresAt = createdAt + 2 * 60 * 60_000;
+        const expiresAt = createdAt + 48 * 60 * 60_000;
         await getD1()
           .prepare(
             `INSERT INTO pairing_codes

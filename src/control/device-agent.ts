@@ -10,7 +10,7 @@ type ControllerCommand = {
   payload: Record<string, unknown>;
 };
 
-const VERSION = "0.11.0";
+const VERSION = "0.11.1";
 
 const file = configPath();
 const config = JSON.parse(await readFile(file, "utf8")) as DeviceConfig;

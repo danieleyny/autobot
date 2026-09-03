@@ -7,9 +7,9 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.11.0
+## Optional Command Center in v0.11.1
 
-The normal panel remains fully standalone. If the local v0.11.0 device bridge is
+The normal panel remains fully standalone. If the local v0.11.1 device bridge is
 running, the bottom of the panel shows the paired device name and a green
 connection indicator. **Allow command center** controls whether that device may
 accept central inspection, live-fleet, and stop commands.

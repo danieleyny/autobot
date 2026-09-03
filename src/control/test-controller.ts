@@ -81,7 +81,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.11.0-test",
+    version: "0.11.1-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -97,7 +97,7 @@ async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Cl
     "/api/device",
     {
       action: "poll",
-      version: "0.11.0-test",
+      version: "0.11.1-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -149,6 +149,9 @@ try {
     { action: "create-enrollment", label: "Controller test fleet", maxDevices: 2 },
     { cookie },
   );
+  const enrollmentLifetimeMs = Number(enrollment.expiresAt) - Date.now();
+  assert.ok(enrollmentLifetimeMs > 47.9 * 60 * 60_000);
+  assert.ok(enrollmentLifetimeMs <= 48 * 60 * 60_000);
   const executorOne = await claimDevice(String(enrollment.code), `Executor One ${crypto.randomUUID().slice(0, 8)}`);
   const executorTwo = await claimDevice(String(enrollment.code), `Executor Two ${crypto.randomUUID().slice(0, 8)}`);
   assert.equal(executorOne.approvalStatus, "pending");
@@ -168,7 +171,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.11.0-test",
+      version: "0.11.1-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },

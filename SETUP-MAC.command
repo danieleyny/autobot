@@ -2,7 +2,7 @@
 set -e
 cd "${0:A:h}"
 
-echo "AUTOBOT v0.11.0 Mac Setup"
+echo "AUTOBOT v0.11.1 Mac Setup"
 echo "=========================="
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required. Install the current LTS release from https://nodejs.org and run this file again."

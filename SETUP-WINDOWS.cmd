@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo AUTOBOT v0.11.0 Windows Setup
+echo AUTOBOT v0.11.1 Windows Setup
 echo ===============================
 where node >nul 2>nul
 if errorlevel 1 (

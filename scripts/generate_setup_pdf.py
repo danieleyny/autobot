@@ -39,7 +39,7 @@ def footer(canvas, doc):
     canvas.line(doc.leftMargin, 0.48 * inch, width - doc.rightMargin, 0.48 * inch)
     canvas.setFont("Helvetica", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(doc.leftMargin, 0.30 * inch, "AUTOBOT Owned-Event RSVP Lab v0.11.0")
+    canvas.drawString(doc.leftMargin, 0.30 * inch, "AUTOBOT Owned-Event RSVP Lab v0.11.1")
     canvas.drawRightString(width - doc.rightMargin, 0.30 * inch, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -53,7 +53,7 @@ def build_pdf():
         rightMargin=0.65 * inch,
         topMargin=0.58 * inch,
         bottomMargin=0.68 * inch,
-        title="AUTOBOT v0.11.0 Second Computer Setup",
+        title="AUTOBOT v0.11.1 Second Computer Setup",
         author="AUTOBOT RSVP Lab",
         subject="Copyable Windows and Mac setup instructions",
     )
@@ -189,7 +189,7 @@ def build_pdf():
         story.append(table)
         story.append(Spacer(1, 8))
 
-    story.append(Paragraph("AUTOBOT v0.11.0", title))
+    story.append(Paragraph("AUTOBOT v0.11.1", title))
     story.append(Paragraph("SECOND COMPUTER SETUP - WINDOWS AND MAC", subtitle))
     banner = Table(
         [[Paragraph("COPYABLE COMMANDS", badge), Paragraph("1-20 LAPTOPS", badge), Paragraph("REMOTE EVENT OPENING", badge)]],
@@ -216,14 +216,14 @@ def build_pdf():
     h("1. Start enrollment on the main dashboard")
     item("On the main MacBook, open https://autobot-command-center.avgschnook.chatgpt.site")
     item("Enter the dashboard PIN.")
-    item("Set the maximum number of new laptops and click <b>Start 2-hour enrollment</b>.")
-    item("Keep the displayed enrollment code available. Approve every laptop after it appears.")
+    item("Set the maximum number of new laptops and click <b>Start 48-hour enrollment</b>.")
+    item("Keep the displayed code available for up to 48 hours. Approve every laptop after it appears.")
 
     h("2. Install the basics on the new computer")
     item("Install Google Chrome from https://www.google.com/chrome/")
     item("Install the current Node.js LTS release from https://nodejs.org/")
     item("Download the newest AUTOBOT release ZIP from https://github.com/danieleyny/autobot/releases/latest")
-    item("Extract the ZIP. Open the folder named AUTOBOT-System-v0.11.0.")
+    item("Extract the ZIP. Open the folder named AUTOBOT-System-v0.11.1.")
 
     h("3. Make a quiet Chrome profile")
     item("Create a normal Chrome profile named AUTOBOT Laptop 01. Continue without a Google account.")
@@ -271,7 +271,7 @@ def build_pdf():
     )
 
     h("2. Open PowerShell in the extracted folder")
-    p("In File Explorer, open AUTOBOT-System-v0.11.0. Click the address bar, type <b>powershell</b>, and press Enter.")
+    p("In File Explorer, open AUTOBOT-System-v0.11.1. Click the address bar, type <b>powershell</b>, and press Enter.")
 
     h("3. Run the setup assistant")
     code_box(".\\SETUP-WINDOWS.cmd")
@@ -296,7 +296,7 @@ def build_pdf():
     item("Open chrome://extensions and turn on Developer mode.")
     item("Click Load unpacked.")
     item("Select the inner <b>extension</b> folder, not the outer AUTOBOT folder.")
-    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.11.0 appears.")
+    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.11.1 appears.")
 
     story.append(PageBreak())
     story.append(Paragraph("MAC SETUP", title))
@@ -312,7 +312,7 @@ def build_pdf():
     )
 
     h("2. Move Terminal into the AUTOBOT folder")
-    p("Type <font name='Courier'>cd</font> followed by one space. Drag the extracted AUTOBOT-System-v0.11.0 folder into Terminal, then press Return.")
+    p("Type <font name='Courier'>cd</font> followed by one space. Drag the extracted AUTOBOT-System-v0.11.1 folder into Terminal, then press Return.")
 
     h("3. Run the setup assistant")
     code_box("chmod +x SETUP-MAC.command\n./SETUP-MAC.command")
@@ -340,7 +340,7 @@ def build_pdf():
     h("4. Load the extension")
     item("Open chrome://extensions and turn on Developer mode.")
     item("Click Load unpacked and select the inner <b>extension</b> folder.")
-    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.11.0 appears.")
+    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.11.1 appears.")
 
     story.append(PageBreak())
     story.append(Paragraph("CONNECT, TEST, AND OPERATE", title))
@@ -375,7 +375,7 @@ def build_pdf():
     item("Each selected device receives one independent, one-use lease. Failed devices are not automatically retried.")
     callout(
         "The POSH Stay in the loop email/text dialog is a successful post-RSVP state. "
-        "AUTOBOT v0.11.0 recognizes it as confirmed without choosing either marketing option."
+        "AUTOBOT v0.11.1 recognizes it as confirmed without choosing either marketing option."
     )
 
     h("6. Fleet directory and shutdown")

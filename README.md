@@ -8,7 +8,7 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.11.0 includes an optional multi-device Command Center for a variable
+AUTOBOT v0.11.1 includes an optional multi-device Command Center for a variable
 fleet of 1–20 laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
 password delivery, remote event-page opening, readiness checks, rehearsal,
@@ -28,7 +28,7 @@ Use these steps when adding a friend's computer to the hosted Command Center:
    `OPEN-FIRST-AUTOBOT-SETUP-GUIDE.pdf`. Its terminal commands are copyable.
 2. Install Google Chrome and the current Node.js LTS release.
 3. In the [AUTOBOT Command Center](https://autobot-command-center.avgschnook.chatgpt.site),
-   start a two-hour enrollment window for the number of laptops being added.
+   start a 48-hour enrollment window for the number of laptops being added.
 4. On Windows, double-click `SETUP-WINDOWS.cmd`. On Mac, double-click
    `SETUP-MAC.command`. The assistant installs dependencies, asks for the
    enrollment code and laptop name, registers automatic startup, and starts the
@@ -55,11 +55,11 @@ npm run device
 ```
 
 One-time pairing codes work once and expire after ten minutes. A batch
-enrollment code works for the configured number of laptops for up to two hours;
+enrollment code works for the configured number of laptops for up to 48 hours;
 every enrolled laptop remains blocked until approved in the dashboard. POSH
 sign-in, OTP, and CAPTCHA/Cloudflare checks remain local and manual. The
 dashboard may deliver an event password encrypted separately for each selected
-v0.11.0 device.
+device running v0.11.0 or newer.
 
 ## Install
 
@@ -112,7 +112,7 @@ Start the controller locally:
 npm run control:dev
 ```
 
-Open `http://localhost:3000`, enter the dashboard PIN, and start a two-hour
+Open `http://localhost:3000`, enter the dashboard PIN, and start a 48-hour
 fleet enrollment or create a ten-minute one-time pairing code. The hosted
 controller is available at
 `https://autobot-command-center.avgschnook.chatgpt.site` for devices that are
@@ -154,7 +154,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.11.0. On a POSH event page,
+Reload the unpacked extension after installing v0.11.1. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
