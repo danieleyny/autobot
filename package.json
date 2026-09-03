@@ -17,6 +17,7 @@
     "device:uninstall": "tsx src/control/install-service.ts --remove",
     "device:simulate": "tsx src/control/simulate.ts",
     "test:control": "tsx src/control/test-controller.ts",
+    "test:presence": "tsx --test src/control/test-presence.ts",
     "typecheck": "tsc --noEmit",
     "test": "playwright test"
   },

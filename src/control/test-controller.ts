@@ -192,6 +192,10 @@ try {
     },
     { cookie },
   );
+  // Force a fresh timestamp before checking write coalescing, independently of
+  // compilation/startup time spent on the preceding setup requests.
+  await poll(executorOne.token, executorOne.keys, `${eventTitle} presence check`);
+  await poll(executorOne.token, executorOne.keys, eventTitle);
   const directoryState = await jsonRequest("/api/control", null, { cookie });
   const directoryDevice = (directoryState.devices as Array<Record<string, unknown>>).find(
     (item) => item.id === executorOne.id,
@@ -199,6 +203,15 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
+  assert.equal(directoryState.controllerRevision, "0.11.1-presence.1");
+  const firstSeenAt = Number(directoryDevice?.lastSeenAt);
+  await poll(executorOne.token, executorOne.keys, eventTitle);
+  const duplicateState = await jsonRequest("/api/control", null, { cookie });
+  const duplicateDevice = (duplicateState.devices as Array<Record<string, unknown>>).find(
+    (item) => item.id === executorOne.id,
+  );
+  assert.equal(duplicateDevice?.lastSeenAt, firstSeenAt, "unchanged immediate polls must not rewrite presence");
+  assert.equal(duplicateDevice?.online, true);
 
   const nextEventUrl = "https://posh.vip/e/next-test-event";
   await jsonRequest(
@@ -213,6 +226,7 @@ try {
   assert.equal(navigationOneCommand.type, "open-event");
   assert.equal(navigationTwoCommand.type, "open-event");
   assert.equal((navigationOneCommand.payload as Record<string, unknown>).eventUrl, nextEventUrl);
+  assert.ok(navigationOneCommand.id, "a skipped presence write must not skip command delivery");
   await jsonRequest(
     "/api/device",
     { action: "report", commandId: navigationOneCommand.id, phase: "event-opened" },

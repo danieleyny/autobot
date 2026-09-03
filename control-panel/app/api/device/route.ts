@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { audit, ensureControlSchema, nowMs, parseJson, randomToken, sha256 } from "../../../db/control";
 import { getD1 } from "../../../db";
+import { DEVICE_POLL_UPDATE_SQL, devicePollUpdateBindings } from "../../../db/device-presence";
 
 type DeviceAuth = { id: string; owner_id: string; name: string; approval_status: "pending" | "approved" };
 
@@ -146,13 +147,15 @@ export async function POST(request: NextRequest) {
       const timestamp = nowMs();
       const mode = (status as Record<string, unknown>).controlConnected === true ? "managed" : "local";
       await getD1()
-        .prepare(
-          `UPDATE devices
-           SET version = ?, mode = ?, state_json = ?, last_seen_at = ?,
-               public_key = COALESCE(?, public_key)
-           WHERE id = ?`,
-        )
-        .bind(version, mode, JSON.stringify(status), timestamp, publicKey, device.id)
+        .prepare(DEVICE_POLL_UPDATE_SQL)
+        .bind(...devicePollUpdateBindings({
+          id: device.id,
+          version,
+          mode,
+          stateJson: JSON.stringify(status),
+          publicKey,
+          now: timestamp,
+        }))
         .run();
 
       if (device.approval_status !== "approved") {
