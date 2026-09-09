@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.11.1";
+  const VERSION = "0.12.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -14,7 +14,6 @@
   const ANTI_BOT_PATTERN =
     /captcha|turnstile|cloudflare|verifying you(?:'|’)re not a robot|too many requests|rate limit|temporarily blocked/i;
   const DOM_POLL_MS = 25;
-  const STALLED_ORDER_GRACE_MS = 3_000;
   const GATE_EARLY_MS = 120_000;
   const GATE_LATE_MS = 120_000;
   const GATE_ATTEMPT_OFFSETS_MS = [
@@ -78,7 +77,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.11.1</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.12.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -190,19 +189,22 @@
 
   async function controlReport(command, phase, detail = {}) {
     if (!command?.id) return { ok: true, local: true };
-    const result = await bridgeMessage({
-      type: "autobot:control-report",
-      report: {
-        commandId: command.id,
-        runId: command.runId || command.payload?.runId || null,
-        phase,
-        detail
-      }
-    });
-    if (!result?.ok) {
-      throw new Error(result?.error || "The command center did not acknowledge the device report.");
+    let lastError = "The command center did not acknowledge the device report.";
+    for (const retryDelay of [0, 100, 300]) {
+      if (retryDelay) await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      const result = await bridgeMessage({
+        type: "autobot:control-report",
+        report: {
+          commandId: command.id,
+          runId: command.runId || command.payload?.runId || null,
+          phase,
+          detail
+        }
+      });
+      if (result?.ok) return result;
+      lastError = result?.error || lastError;
     }
-    return result;
+    throw new Error(lastError);
   }
 
   function applyControlConfiguration(command) {
@@ -279,7 +281,9 @@
     applyControlConfiguration(command);
     log(`Command center: ${command.type === "inspect" ? "inspection" : "live fleet"} command accepted.`);
     await controlReport(command, "accepted");
-    await arm(command);
+    // Keep the local control loop free while the timed run waits. This allows a
+    // central Stop command to arrive without disturbing the local release clock.
+    void arm(command);
   }
 
   async function pollControlBridge() {
@@ -472,6 +476,13 @@
     }
   }
 
+  async function waitForEventHeading(config) {
+    await waitFor(() => {
+      assertNoBlockingChallenge();
+      return exactText("h1", config.eventTitle).length === 1;
+    }, 15_000, `event heading "${config.eventTitle}"`);
+  }
+
   function visibleTicketDialog() {
     return (
       [...document.querySelectorAll('[role="dialog"]')].find(
@@ -490,20 +501,43 @@
       return;
     }
 
-    const buttons = await waitFor(() => {
-      const matches = exactButton("RSVP", "Get Tickets");
-      return matches.length === 1 ? matches : null;
-    }, 10_000, "one RSVP/Get Tickets control");
-    if (buttons.length !== 1) {
-      throw new Error(`Expected one RSVP/Get Tickets control, found ${buttons.length}.`);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const buttons = await waitFor(() => {
+        if (visibleTicketDialog()) return "open";
+        const matches = exactButton("RSVP", "Get Tickets");
+        return matches.length === 1 ? matches : null;
+      }, attempt === 1 ? 10_000 : 5_000, "one RSVP/Get Tickets control");
+      if (buttons === "open") {
+        log("Ticket selector is already open.");
+        return;
+      }
+      if (buttons.length !== 1) {
+        throw new Error(`Expected one RSVP/Get Tickets control, found ${buttons.length}.`);
+      }
+      const clickedButton = buttons[0];
+      clickedButton.click();
+      try {
+        const clickResult = await waitFor(() => {
+          if (visibleTicketDialog()) return "open";
+          const replacementButtons = exactButton("RSVP", "Get Tickets");
+          if (replacementButtons.length === 1 && replacementButtons[0] !== clickedButton) {
+            return "replaced";
+          }
+          return null;
+        }, 5_000, "the ticket dialog");
+        if (clickResult === "open") {
+          log(attempt === 1 ? "Ticket selector opened." : "Ticket selector opened after one safe retry.");
+          return;
+        }
+        if (attempt === 2) {
+          throw new Error("The event page replaced the RSVP control twice without opening the ticket selector.");
+        }
+        log("The event page replaced the RSVP control; retrying the new control once.");
+      } catch (error) {
+        if (attempt === 2) throw error;
+        log("The first RSVP click did not open the selector; retrying the current control once.");
+      }
     }
-    buttons[0].click();
-    await waitFor(
-      () => visibleTicketDialog(),
-      8_000,
-      "the ticket dialog"
-    );
-    log("Ticket selector opened.");
   }
 
   function findTicketCard(ticketName) {
@@ -603,15 +637,6 @@
       "the ticket selector or event RSVP control"
     );
     assertEvent(config);
-  }
-
-  function stalledOrderPageVisible() {
-    const bodyText = normalize(document.body.innerText);
-    return (
-      /\bYour Order\b/i.test(bodyText) &&
-      /\bTotal Due\b/i.test(bodyText) &&
-      Boolean(exactVisibleAction("Back"))
-    );
   }
 
   function visibleOrderDialog() {
@@ -717,6 +742,7 @@
 
   async function executeReservation(config) {
     if (stopped) return;
+    await waitForEventHeading(config);
     assertEvent(config);
     if (config.execute && config.controlCommandId && !config.controlExecutionStarted) {
       if (!activeControlCommand || activeControlCommand.id !== config.controlCommandId) {
@@ -901,8 +927,6 @@
         () => {}
       );
     }
-    const finalSubmittedAt = Date.now();
-
     let finalResult;
     try {
       finalResult = await waitFor(() => {
@@ -911,37 +935,14 @@
         if (SUCCESS_PATTERN.test(bodyText)) return "success";
         if (hasNewSoldOutEvidence(config)) return "soldout";
         if (DUPLICATE_PATTERN.test(bodyText)) return "duplicate";
-        if (
-          Date.now() - finalSubmittedAt >= STALLED_ORDER_GRACE_MS &&
-          stalledOrderPageVisible()
-        ) {
-          return "stalled";
-        }
         return null;
       }, 12_000, "reservation confirmation");
     } catch {
-      if (stalledOrderPageVisible()) {
-        await retryNextTicket(
-          config,
-          resolvedTicketName,
-          "No confirmation appeared and the order page still has a Back control"
-        );
-        return;
-      }
-
       await markCompleted(config, "submitted-unconfirmed");
       log("Final RSVP was submitted once, but POSH showed no recognized confirmation. Do not retry; verify the ticket in My Orders.");
       return;
     }
 
-    if (finalResult === "stalled") {
-      await retryNextTicket(
-        config,
-        resolvedTicketName,
-        "The order page remained unchanged for three seconds after final RSVP"
-      );
-      return;
-    }
     if (finalResult === "duplicate") {
       await markCompleted(config, "already-reserved");
       log("POSH reports that this account already has or reached the limit for this event.");
@@ -1016,7 +1017,7 @@
     await clearState();
   }
 
-  async function schedule(config, reloadAtRelease) {
+  async function schedule(config) {
     const remaining = config.releaseAt - Date.now();
     if (remaining <= 0) {
       await executeReservation(config);
@@ -1032,12 +1033,7 @@
     setTimeout(async () => {
       if (stopped) return;
       clearInterval(countdownTimer);
-      if (reloadAtRelease) {
-        log("Release time reached; refreshing once.");
-        location.reload();
-      } else {
-        await executeReservation(config).catch(fail);
-      }
+      await executeReservation(config).catch(fail);
     }, remaining);
   }
 
@@ -1045,7 +1041,8 @@
     while (!stopped && Date.now() < timestamp) {
       const remaining = timestamp - Date.now();
       armButton.textContent = `Armed · ${Math.max(0, Math.ceil(remaining / 1000))}s`;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
+      const delay = remaining > 2_000 ? 250 : remaining > 250 ? 25 : 5;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
     }
     if (stopped) throw new Error("Stopped by user.");
   }
@@ -1083,7 +1080,11 @@
           gateRetrying: false
         };
         await saveState(safeState);
-        log("Gate opened; starting the RSVP sequence immediately.");
+        if (Date.now() < config.releaseAt) {
+          log("Gate opened early; holding the prepared page until the exact release time.");
+          await waitUntil(config.releaseAt);
+        }
+        log("Release time reached; starting the RSVP sequence without refreshing.");
         await executeReservation(safeState);
         return;
       }
@@ -1133,10 +1134,11 @@
       }
 
       await unlockEvent(config);
+      await waitForEventHeading(config);
       assertEvent(config);
       const safeState = { ...config, eventPassword: "", gateRetrying: false };
       await saveState(safeState);
-      await schedule(safeState, config.releaseAt > Date.now() + 1000);
+      await schedule(safeState);
     } catch (error) {
       fail(error);
     }
@@ -1233,7 +1235,7 @@
     $("#release-gate").checked = state.retryGate !== false;
     $("#execute").checked = Boolean(state.execute);
     log("Resuming the armed run after refresh.");
-    schedule(state, false).catch(fail);
+    schedule(state).catch(fail);
   });
 
   const detectedTitle = normalize(document.title);

@@ -64,6 +64,10 @@ function validateEventUrl(value: unknown): string {
   if (!isOwnedPosh && !isLocalMock) {
     throw new Error("Event URL must be a posh.vip /e/ page or the local mock event.");
   }
+  if (isOwnedPosh) {
+    url.search = "";
+    url.hash = "";
+  }
   return url.toString();
 }
 
@@ -149,7 +153,8 @@ export async function GET() {
        FROM leases WHERE owner_id = ? ORDER BY created_at DESC LIMIT 100`,
     ).bind(user.userId),
     db.prepare(
-      `SELECT run_devices.run_id, run_devices.device_id, run_devices.role, run_devices.status,
+      `SELECT run_devices.run_id, run_devices.device_id, run_devices.role,
+              run_devices.ticket_strategy, run_devices.status,
               devices.name AS device_name, runs.updated_at
        FROM run_devices
        JOIN devices ON devices.id = run_devices.device_id
@@ -560,7 +565,6 @@ export async function POST(request: NextRequest) {
           eventUrl: run.event_url,
           eventTitle: run.event_title,
           releaseAt: run.release_at,
-          ticketStrategy: run.ticket_strategy,
         };
         const timestamp = nowMs();
         const db = getD1();
@@ -568,10 +572,11 @@ export async function POST(request: NextRequest) {
         if (run.mode === "inspection") {
           const statements = selectedIds.flatMap((deviceId) => [
             db.prepare(
-                `INSERT OR REPLACE INTO run_devices (run_id, device_id, role, status)
-                 VALUES (?, ?, 'inspection', 'queued')`,
+                `INSERT OR REPLACE INTO run_devices
+                 (run_id, device_id, role, ticket_strategy, status)
+                 VALUES (?, ?, 'inspection', ?, 'queued')`,
               )
-              .bind(runId, deviceId),
+              .bind(runId, deviceId, run.ticket_strategy),
             db.prepare(
               `INSERT INTO commands
                (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
@@ -583,6 +588,7 @@ export async function POST(request: NextRequest) {
               runId,
               JSON.stringify({
                 ...payload,
+                ticketStrategy: run.ticket_strategy,
                 execute: false,
                 ...(passwordIncluded ? { eventSecret: encryptedSecrets[deviceId] } : {}),
               }),
@@ -601,8 +607,22 @@ export async function POST(request: NextRequest) {
           if (body.confirmEventTitle !== run.event_title) {
             throw new Error("Type the exact event title to confirm this live test.");
           }
+          const requestedFirstSlotCount = Number(body.firstSlotCount);
+          const firstSlotCount = Number.isInteger(requestedFirstSlotCount)
+            ? requestedFirstSlotCount
+            : Math.ceil(selectedIds.length / 2);
+          if (firstSlotCount < 0 || firstSlotCount > selectedIds.length) {
+            throw new Error("The first-slot device count is invalid for the selected fleet.");
+          }
+          const assignments = new Map(
+            selectedIds.map((deviceId, index) => [
+              deviceId,
+              index < firstSlotCount ? "first" : "second",
+            ] as const),
+          );
           const statements = selectedIds.flatMap((deviceId) => {
             const leaseId = crypto.randomUUID();
+            const assignedTicketStrategy = assignments.get(deviceId) ?? "first";
             return [
               db.prepare(
                 `INSERT INTO leases (id, owner_id, run_id, device_id, status, created_at)
@@ -610,10 +630,11 @@ export async function POST(request: NextRequest) {
               )
                 .bind(leaseId, user.userId, runId, deviceId, timestamp),
               db.prepare(
-                `INSERT OR REPLACE INTO run_devices (run_id, device_id, role, status)
-                 VALUES (?, ?, 'executor', 'queued')`,
+                `INSERT OR REPLACE INTO run_devices
+                 (run_id, device_id, role, ticket_strategy, status)
+                 VALUES (?, ?, 'executor', ?, 'queued')`,
               )
-                .bind(runId, deviceId),
+                .bind(runId, deviceId, assignedTicketStrategy),
               db.prepare(
                 `INSERT INTO commands
                  (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
@@ -625,6 +646,7 @@ export async function POST(request: NextRequest) {
                 runId,
                 JSON.stringify({
                 ...payload,
+                ticketStrategy: assignedTicketStrategy,
                 execute: true,
                 leaseId,
                 fleetSize: selectedIds.length,
@@ -650,6 +672,18 @@ export async function POST(request: NextRequest) {
             devices: selectedIds.length,
             reservationTarget: run.mode === "live" ? selectedIds.length : 0,
             passwordDelivered: passwordIncluded,
+            ...(run.mode === "live"
+              ? {
+                  firstSlotDevices: Number.isInteger(Number(body.firstSlotCount))
+                    ? Number(body.firstSlotCount)
+                    : Math.ceil(selectedIds.length / 2),
+                  secondSlotDevices:
+                    selectedIds.length -
+                    (Number.isInteger(Number(body.firstSlotCount))
+                      ? Number(body.firstSlotCount)
+                      : Math.ceil(selectedIds.length / 2)),
+                }
+              : {}),
           },
         });
         return NextResponse.json({ ok: true });
@@ -662,9 +696,21 @@ export async function POST(request: NextRequest) {
           .bind(runId, user.userId)
           .first<{ id: string; status: string }>();
         if (!run) throw new Error("Run not found.");
+        const terminalStatuses = [
+          "submitted",
+          "confirmed",
+          "submitted-unconfirmed",
+          "already-reserved",
+          "failed",
+          "local-override",
+          "stopped",
+        ];
         const linked = await getD1()
-          .prepare("SELECT device_id FROM run_devices WHERE run_id = ?")
-          .bind(runId)
+          .prepare(
+            `SELECT device_id FROM run_devices
+             WHERE run_id = ? AND status NOT IN (${terminalStatuses.map(() => "?").join(",")})`,
+          )
+          .bind(runId, ...terminalStatuses)
           .all<{ device_id: string }>();
         for (const device of linked.results) {
           await queueCommand({
@@ -682,6 +728,14 @@ export async function POST(request: NextRequest) {
           getD1()
             .prepare("UPDATE leases SET status = 'blocked', completed_at = ? WHERE run_id = ? AND status IN ('offered', 'active')")
             .bind(nowMs(), runId),
+          getD1()
+            .prepare(
+              `UPDATE run_devices SET status = 'stopped'
+               WHERE run_id = ?
+                 AND status NOT IN
+                   ('submitted', 'confirmed', 'submitted-unconfirmed', 'already-reserved', 'failed', 'local-override', 'stopped')`,
+            )
+            .bind(runId),
         ]);
         await audit({ ownerId: user.userId, runId, source: "control", action: "run-stopped" });
         return NextResponse.json({ ok: true });

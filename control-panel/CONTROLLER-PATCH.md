@@ -1,8 +1,10 @@
-# Controller-only presence patch: 0.11.1-presence.1
+# AUTOBOT Command Center 0.12.0
 
-This pre-trial patch is compatible with the existing v0.11.1 laptop packages.
-No bridge/extension update, restart, re-pairing, credential rotation, database
-migration, event change, or lease change is required.
+The two-slot fleet allocation is compatible with existing v0.11.x laptop
+packages: the controller now assigns each selected device either the first or
+second displayed free RSVP and records that target with the run. Updating the
+device package to v0.12.0 adds the release-timing and reliability improvements;
+saved pairings remain valid.
 
 - Identical device polls update their stored presence at most every five seconds.
   Status, mode, version, and encryption-key changes still persist immediately.
@@ -14,14 +16,12 @@ migration, event change, or lease change is required.
 - Visible dashboards keep the existing two-second refresh rate. Hidden tabs
   skip scheduled refreshes and refresh immediately on return. Concurrent
   refreshes share one request. Forms and selections are not reset by hiding.
+- Late Stop or failure reports cannot overwrite a submitted or confirmed result.
 - Device command polling, acknowledgments, immediate reports, local controls,
-  password timing, and live execution authorization are unchanged.
+  and live execution authorization retain the v0.11 safety model.
 
-Limit: this reduces steady-state device row updates by approximately 80%, plus
-hidden-dashboard traffic. It does NOT reduce existing bridges' one-second HTTP
-request rate or guarantee compliance with any hosting quota. An adaptive bridge
-upgrade remains a separate post-trial change requiring device updates and
-extended tests. Keep production capacity monitoring separate from this patch.
+The earlier presence-write coalescing and hidden-dashboard polling protections
+remain in place. Existing bridges still poll the controller once per second.
 
 Validation: `npm run test:presence`, `npm run test:control`, `npm test`,
 `npm run typecheck`, controller lint/typecheck/build. Tests must target a local

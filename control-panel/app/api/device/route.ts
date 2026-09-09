@@ -246,6 +246,30 @@ export async function POST(request: NextRequest) {
       }
 
       if (runId && ["submitted", "confirmed", "submitted-unconfirmed"].includes(phase)) {
+        const statusUpdate =
+          phase === "confirmed"
+            ? getD1()
+                .prepare(
+                  `UPDATE run_devices SET status = 'confirmed'
+                   WHERE run_id = ? AND device_id = ?
+                     AND status NOT IN ('already-reserved', 'stopped')`,
+                )
+                .bind(runId, device.id)
+            : phase === "submitted-unconfirmed"
+              ? getD1()
+                  .prepare(
+                    `UPDATE run_devices SET status = 'submitted-unconfirmed'
+                     WHERE run_id = ? AND device_id = ?
+                       AND status NOT IN ('confirmed', 'already-reserved', 'stopped')`,
+                  )
+                  .bind(runId, device.id)
+              : getD1()
+                  .prepare(
+                    `UPDATE run_devices SET status = 'submitted'
+                     WHERE run_id = ? AND device_id = ?
+                       AND status NOT IN ('confirmed', 'submitted-unconfirmed', 'already-reserved', 'stopped')`,
+                  )
+                  .bind(runId, device.id);
         await getD1().batch([
           getD1()
             .prepare(
@@ -253,9 +277,7 @@ export async function POST(request: NextRequest) {
                WHERE run_id = ? AND device_id = ? AND status = 'active'`,
             )
             .bind(timestamp, runId, device.id),
-          getD1()
-            .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
-            .bind(phase, runId, device.id),
+          statusUpdate,
         ]);
         if (phase !== "submitted") {
           await finalizeRunIfSettled(runId, device.owner_id, timestamp);
@@ -269,13 +291,21 @@ export async function POST(request: NextRequest) {
             )
             .bind(timestamp, runId, device.id),
           getD1()
-            .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
+            .prepare(
+              `UPDATE run_devices SET status = ?
+               WHERE run_id = ? AND device_id = ?
+                 AND status NOT IN ('submitted', 'confirmed', 'submitted-unconfirmed', 'already-reserved', 'stopped')`,
+            )
             .bind(phase, runId, device.id),
         ]);
         await finalizeRunIfSettled(runId, device.owner_id, timestamp);
       } else if (runId) {
         await getD1()
-          .prepare("UPDATE run_devices SET status = ? WHERE run_id = ? AND device_id = ?")
+          .prepare(
+            `UPDATE run_devices SET status = ?
+             WHERE run_id = ? AND device_id = ?
+               AND status NOT IN ('submitted', 'confirmed', 'submitted-unconfirmed', 'already-reserved', 'stopped')`,
+          )
           .bind(phase.slice(0, 60), runId, device.id)
           .run();
         if (phase === "inspection-complete") {

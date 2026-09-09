@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo AUTOBOT v0.11.1 Windows Setup
+echo AUTOBOT v0.12.0 Windows Setup
 echo ===============================
 where node >nul 2>nul
 if errorlevel 1 (
@@ -21,7 +21,11 @@ if errorlevel 1 (
 
 echo Open OPEN-FIRST-AUTOBOT-SETUP-GUIDE.pdf for the complete copy-and-paste checklist.
 
-if exist "%LOCALAPPDATA%\AUTOBOT\device.json" goto paired
+set "EXISTING_PAIRING=0"
+if exist "%LOCALAPPDATA%\AUTOBOT\device.json" (
+  set "EXISTING_PAIRING=1"
+  goto paired
+)
 
 set /p PAIR_CODE=Enter the enrollment or one-time code: 
 set /p DEVICE_NAME=Enter this laptop's name, for example Laptop 01: 
@@ -39,5 +43,11 @@ echo.
 echo Chrome Extensions is opening. Turn on Developer mode, choose Load unpacked, and select:
 echo %~dp0extension
 echo.
+if "%EXISTING_PAIRING%"=="1" (
+  echo Existing pairing preserved. Remove the old unpacked AUTOBOT extension, load the extension folder shown above, then restart this PC once.
+  echo The updated bridge will start automatically after login.
+  pause
+  exit /b 0
+)
 echo Keep this window open during testing. Press Ctrl+C to stop the bridge.
 call npm run device

@@ -8,13 +8,16 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.11.1 includes an optional multi-device Command Center for a variable
+AUTOBOT v0.12.0 includes an optional multi-device Command Center for a variable
 fleet of 1–20 laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
 password delivery, remote event-page opening, readiness checks, rehearsal,
 arming, per-device results, a fleet directory, stop, audit, and device-revocation
-capabilities. It also recognizes POSH's post-RSVP update-preference dialog as a
-confirmed reservation.
+capabilities. The Command Center can split the selected fleet between the first
+and second displayed ticket slots, and records the target used by each laptop.
+This release also holds an unlocked event until the exact release time, avoids a
+release-time refresh, retries a replaced RSVP control once, and recognizes
+POSH's post-RSVP update-preference dialog as a confirmed reservation.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -41,6 +44,12 @@ Use these steps when adding a friend's computer to the hosted Command Center:
    checked in the AUTOBOT panel.
 8. Confirm the laptop is ready in the fleet overview, then run a **Rehearsal**
    before attempting a controlled live test.
+
+To upgrade an already paired laptop, run the setup assistant from the extracted
+v0.12.0 folder. It preserves the saved device identity and Command Center
+pairing; do not remove or revoke the laptop first. Remove the old unpacked
+AUTOBOT extension in `chrome://extensions`, load the new package's `extension`
+folder, and restart the computer once so the startup bridge switches to v0.12.0.
 
 For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
@@ -154,7 +163,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.11.1. On a POSH event page,
+Reload the unpacked extension after installing v0.12.0. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws

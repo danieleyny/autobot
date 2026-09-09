@@ -213,3 +213,81 @@ test("live fleet command arms one independent executor without clicking before r
   await expect(page.locator("#release-at")).not.toHaveValue("");
   await expect(page.locator("#arm")).toContainText("Armed");
 });
+
+test("central slot-two assignment selects the second displayed free RSVP", async ({ page }) => {
+  await installChromeMock(page, {
+    id: "slot-two-command",
+    runId: "slot-split-run",
+    type: "arm-live",
+    payload: {
+      runId: "slot-split-run",
+      eventUrl: "http://127.0.0.1:4173/event",
+      eventTitle: "Two Slot Test",
+      releaseAt: Date.now(),
+      ticketStrategy: "second",
+      leaseId: "slot-two-lease",
+      fleetSize: 2,
+      execute: true
+    }
+  });
+
+  await page.goto("http://127.0.0.1:4173/event");
+  await page.setContent(`
+    <title>Two Slot Test</title>
+    <main id="root"><h1>Two Slot Test</h1><button id="open">RSVP</button></main>
+  `);
+  await page.evaluate(() => {
+    const root = document.querySelector("#root") as HTMLElement;
+    Object.assign(window, { __selectedSlot: "" });
+
+    const renderPicker = (selected = "") => {
+      root.innerHTML = `
+        <h1>Two Slot Test</h1>
+        <section role="dialog">
+          ${["Morning Slot", "Evening Slot"].map((name, index) => `
+            <article data-sentry-component="EventPageTicketItem">
+              <h6>${name}</h6><p>Free</p>
+              ${selected === name
+                ? `<button id="remove-${index}">-</button><span>1</span><button disabled>+</button>`
+                : `<button id="add-${index}">+</button>`}
+            </article>
+          `).join("")}
+          ${selected ? '<button id="checkout">Checkout</button>' : ""}
+        </section>
+      `;
+      root.querySelector("#add-0")?.addEventListener("click", () => renderPicker("Morning Slot"));
+      root.querySelector("#add-1")?.addEventListener("click", () => renderPicker("Evening Slot"));
+      root.querySelector("#checkout")?.addEventListener("click", () => {
+        (window as unknown as { __selectedSlot: string }).__selectedSlot = selected;
+        root.innerHTML = `
+          <h1>Two Slot Test</h1>
+          <section role="dialog"><h2>Your Order</h2><p>1x ${selected}</p><p>Total Due</p><p>Free</p><button id="finish">RSVP</button></section>
+        `;
+        root.querySelector("#finish")?.addEventListener("click", () => {
+          root.innerHTML = '<h1>Two Slot Test</h1><p>Reservation confirmed</p>';
+        });
+      });
+    };
+
+    root.querySelector("#open")?.addEventListener("click", () => renderPicker());
+  });
+
+  await page.addScriptTag({ path: path.resolve("extension/content.js") });
+  await expect
+    .poll(
+      () => page.evaluate(() => (window as unknown as { __selectedSlot: string }).__selectedSlot),
+      { timeout: 10_000 },
+    )
+    .toBe("Evening Slot");
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __autobotControlReports: Array<{ phase: string }> })
+              .__autobotControlReports.map((report) => report.phase),
+        ),
+      { timeout: 10_000 },
+    )
+    .toContain("confirmed");
+});

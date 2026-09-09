@@ -118,7 +118,8 @@ try {
   if (!alreadyRunning) {
     const npmCli = process.env.npm_execpath;
     if (!npmCli) throw new Error("npm executable path is unavailable.");
-    server = spawn(process.execPath, [npmCli, "run", "dev"], {
+    const testPort = new URL(origin).port || "3000";
+    server = spawn(process.execPath, [npmCli, "run", "dev", "--", "--port", testPort], {
       cwd: new URL("../../control-panel/", import.meta.url),
       env: {
         ...process.env,
@@ -203,7 +204,7 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
-  assert.equal(directoryState.controllerRevision, "0.11.1-presence.1");
+  assert.equal(directoryState.controllerRevision, "0.12.0");
   const firstSeenAt = Number(directoryDevice?.lastSeenAt);
   await poll(executorOne.token, executorOne.keys, eventTitle);
   const duplicateState = await jsonRequest("/api/control", null, { cookie });
@@ -262,6 +263,7 @@ try {
       runId,
       deviceIds: [executorOne.id, executorTwo.id],
       confirmEventTitle: eventTitle,
+      firstSlotCount: 1,
       encryptedSecrets: {
         [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
         [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
@@ -296,6 +298,8 @@ try {
   );
   assert.equal(executorOnePayload.releaseAt, executorTwoPayload.releaseAt);
   assert.equal(executorOnePayload.fleetSize, 2);
+  assert.equal(executorOnePayload.ticketStrategy, "first");
+  assert.equal(executorTwoPayload.ticketStrategy, "second");
 
   await jsonRequest(
     "/api/device",
@@ -328,10 +332,27 @@ try {
     },
     { token: executorOne.token },
   );
+  await jsonRequest(
+    "/api/device",
+    {
+      action: "report",
+      commandId: executorOneCommand.id,
+      runId,
+      phase: "failed",
+      detail: { test: true, message: "late failure must not erase submission" },
+    },
+    { token: executorOne.token },
+  );
 
   const partialState = await jsonRequest("/api/control", null, { cookie });
   const partialRun = (partialState.runs as Array<Record<string, unknown>>).find((item) => item.id === runId);
   assert.equal(partialRun?.status, "armed");
+  const partialRunDevices = (partialState.runDevices as Array<Record<string, unknown>>).filter(
+    (item) => item.run_id === runId,
+  );
+  assert.equal(partialRunDevices.find((item) => item.device_id === executorOne.id)?.status, "submitted");
+  assert.equal(partialRunDevices.find((item) => item.device_id === executorOne.id)?.ticket_strategy, "first");
+  assert.equal(partialRunDevices.find((item) => item.device_id === executorTwo.id)?.ticket_strategy, "second");
 
   await jsonRequest(
     "/api/device",

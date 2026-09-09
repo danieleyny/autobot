@@ -53,6 +53,7 @@ const schemaStatements = [
     run_id TEXT NOT NULL,
     device_id TEXT NOT NULL,
     role TEXT NOT NULL,
+    ticket_strategy TEXT NOT NULL DEFAULT 'any',
     status TEXT NOT NULL DEFAULT 'pending',
     PRIMARY KEY (run_id, device_id)
   )`,

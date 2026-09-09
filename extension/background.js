@@ -1,5 +1,5 @@
 const BRIDGE_URL = "http://127.0.0.1:4181";
-const BRIDGE_VERSION = "0.11.1";
+const BRIDGE_VERSION = "0.12.0";
 const LAST_EVENT_KEY = "autobot:last-event-url";
 const NAVIGATION_ALARM = "autobot-navigation-poll";
 let navigationPolling = false;

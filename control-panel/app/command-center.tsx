@@ -48,6 +48,7 @@ type RunDevice = {
   device_id: string;
   device_name: string;
   role: "executor" | "inspection";
+  ticket_strategy: "any" | "first" | "second";
   status: string;
   updated_at: number;
 };
@@ -168,6 +169,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [eventPassword, setEventPassword] = useState("");
   const [releaseAt, setReleaseAt] = useState("");
   const [ticketStrategy, setTicketStrategy] = useState<"any" | "first" | "second">("any");
+  const [firstSlotPercent, setFirstSlotPercent] = useState(50);
   const [organizerOwned, setOrganizerOwned] = useState(false);
   const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [liveConfirmation, setLiveConfirmation] = useState("");
@@ -215,10 +217,14 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           eventUrl?: string;
           eventTitle?: string;
           ticketStrategy?: "any" | "first" | "second";
+          firstSlotPercent?: number;
         } | null;
         if (saved?.eventUrl) setEventUrl(saved.eventUrl);
         if (saved?.eventTitle) setEventTitle(saved.eventTitle);
         if (saved?.ticketStrategy) setTicketStrategy(saved.ticketStrategy);
+        if (Number.isFinite(saved?.firstSlotPercent)) {
+          setFirstSlotPercent(Math.min(100, Math.max(0, Number(saved?.firstSlotPercent))));
+        }
       } catch {
         // Ignore invalid device-local preferences.
       }
@@ -233,7 +239,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const outdatedDevices = state.devices.filter((device) => !supportsFleetExecution(device.version));
   const activeLeases = state.leases.filter((lease) => ["offered", "active"].includes(String(lease.status)));
   const selectedIdSet = new Set(selected);
-  const selectedDevices = state.devices.filter((device) => selectedIdSet.has(device.id));
+  const selectedDevices = selected
+    .map((deviceId) => state.devices.find((device) => device.id === deviceId))
+    .filter((device): device is Device => Boolean(device));
+  const firstSlotCount = Math.round((selectedDevices.length * firstSlotPercent) / 100);
+  const secondSlotCount = selectedDevices.length - firstSlotCount;
+  const firstSlotDevices = selectedDevices.slice(0, firstSlotCount);
+  const secondSlotDevices = selectedDevices.slice(firstSlotCount);
   const readySelectedDevices = selectedDevices.filter((device) => !readinessIssue(device, eventUrl, eventTitle));
   const latestRunDevices = latestRun
     ? state.runDevices.filter((device) => device.run_id === latestRun.id)
@@ -379,7 +391,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
   const saveEventDetails = () => {
     try {
-      window.localStorage.setItem(EVENT_PROFILE_KEY, JSON.stringify({ eventUrl, eventTitle, ticketStrategy }));
+      window.localStorage.setItem(
+        EVENT_PROFILE_KEY,
+        JSON.stringify({ eventUrl, eventTitle, ticketStrategy, firstSlotPercent }),
+      );
       setNotice("Event details saved in this dashboard browser. Password and release time were not saved.");
     } catch {
       setNotice("This browser blocked local event-detail storage. The current form still works for this session.");
@@ -486,7 +501,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         title: eventTitle,
         eventUrl,
         eventTitle,
-        releaseAt: releaseAt ? new Date(releaseAt).getTime() : Date.now(),
+        releaseAt: releaseAt ? new Date(releaseAt).getTime() : state.serverTime,
         ticketStrategy,
         mode,
         organizerOwned,
@@ -498,12 +513,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         deviceIds: selected,
         confirmEventTitle: liveConfirmation,
         encryptedSecrets,
+        ...(mode === "live" ? { firstSlotCount } : {}),
       });
       setEventPassword("");
       setNotice(
         mode === "inspection"
           ? `Rehearsal sent to ${selected.length} device${selected.length === 1 ? "" : "s"}. No RSVP controls will be clicked.`
-          : `Fleet activated. ${selected.length} device${selected.length === 1 ? " has" : "s have"} one independent execution lease each.`,
+          : `Fleet activated: ${firstSlotCount} targeting slot 1 and ${secondSlotCount} targeting slot 2.`,
       );
       await refresh();
     } catch (error) {
@@ -880,18 +896,60 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                     Encrypted separately for each device. The controller never receives a readable copy.
                   </small>
                 </label>
-                <label className="field">
+                <label className={`field ${mode === "live" ? "sm:col-span-2" : ""}`}>
                   <span>Release time</span>
                   <input type="datetime-local" value={releaseAt} onChange={(event) => setReleaseAt(event.target.value)} />
                 </label>
-                <label className="field">
-                  <span>Ticket strategy</span>
-                  <select value={ticketStrategy} onChange={(event) => setTicketStrategy(event.target.value as typeof ticketStrategy)}>
-                    <option value="any">Any available free RSVP</option>
-                    <option value="first">First available free RSVP</option>
-                    <option value="second">Second available free RSVP</option>
-                  </select>
-                </label>
+                {mode === "inspection" ? (
+                  <label className="field">
+                    <span>Ticket strategy</span>
+                    <select value={ticketStrategy} onChange={(event) => setTicketStrategy(event.target.value as typeof ticketStrategy)}>
+                      <option value="any">Any available free RSVP</option>
+                      <option value="first">First available free RSVP</option>
+                      <option value="second">Second available free RSVP</option>
+                    </select>
+                  </label>
+                ) : (
+                  <div className="field sm:col-span-2 rounded-xl border border-[#d7dcd3] bg-[#fbfcfa] p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span>Two-slot fleet split</span>
+                      <span className="font-mono text-xs text-[#4d594f]">
+                        {firstSlotCount} slot 1 · {secondSlotCount} slot 2
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={firstSlotPercent}
+                      onChange={(event) => setFirstSlotPercent(Number(event.target.value))}
+                      aria-label="Percentage of selected devices targeting the first ticket slot"
+                    />
+                    <div className="flex justify-between text-[11px] font-semibold text-[#6b746c]">
+                      <span>All slot 2</span>
+                      <span>{firstSlotPercent}% toward slot 1</span>
+                      <span>All slot 1</span>
+                    </div>
+                    <div className="grid gap-2 pt-2 sm:grid-cols-2">
+                      <div className="rounded-lg bg-[#eef7df] p-3">
+                        <p className="text-xs font-bold text-[#365318]">Slot 1 · {firstSlotCount}</p>
+                        <p className="mt-1 text-[11px] leading-4 text-[#5c6a55]">
+                          {firstSlotDevices.length ? firstSlotDevices.map((device) => device.name).join(", ") : "No devices assigned"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-[#eef2f7] p-3">
+                        <p className="text-xs font-bold text-[#334b67]">Slot 2 · {secondSlotCount}</p>
+                        <p className="mt-1 text-[11px] leading-4 text-[#5c6a55]">
+                          {secondSlotDevices.length ? secondSlotDevices.map((device) => device.name).join(", ") : "No devices assigned"}
+                        </p>
+                      </div>
+                    </div>
+                    <small className="font-normal leading-5 text-[#6b746c]">
+                      The order shown here is the exact assignment that will be sent. If only one free slot is available, a slot-2 device safely uses that sole option.
+                    </small>
+                  </div>
+                )}
                 {mode === "live" && (
                   <>
                     <label className="field sm:col-span-2">
@@ -973,22 +1031,33 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                     <th className="pb-3 font-bold">Laptop</th>
                     <th className="pb-3 font-bold">Connection</th>
                     <th className="pb-3 font-bold">Preflight</th>
+                    <th className="pb-3 font-bold">Target</th>
                     <th className="pb-3 font-bold">Latest run</th>
                     <th className="pb-3 font-bold">Last check-in</th>
                   </tr>
                 </thead>
                 <tbody>
                   {state.devices.length === 0 ? (
-                    <tr><td colSpan={5} className="py-8 text-center text-[#7b847c]">Enrolled laptops will appear here.</td></tr>
+                    <tr><td colSpan={6} className="py-8 text-center text-[#7b847c]">Enrolled laptops will appear here.</td></tr>
                   ) : (
                     state.devices.map((device) => {
                       const issue = readinessIssue(device, eventUrl, eventTitle);
+                      const runDevice = latestRunDevices.find((entry) => entry.device_id === device.id);
                       const runStatus = latestRunStatusByDevice.get(device.id);
                       return (
                         <tr key={device.id} className="border-b border-[#edf0e9] last:border-0">
                           <td className="py-3 font-semibold">{device.name}<span className="ml-2 font-mono text-[10px] text-[#7b847c]">{device.version}</span></td>
                           <td className="py-3"><span className={device.online ? "text-[#446426]" : "text-[#8b5e52]"}>{device.online ? "Online" : "Offline"}</span></td>
                           <td className={`py-3 font-semibold ${issue ? "text-[#9b5f24]" : "text-[#446426]"}`}>{issue || "Ready"}</td>
+                          <td className="py-3 text-[#59645b]">
+                            {runDevice
+                              ? runDevice.ticket_strategy === "first"
+                                ? "Slot 1"
+                                : runDevice.ticket_strategy === "second"
+                                  ? "Slot 2"
+                                  : "Any"
+                              : "—"}
+                          </td>
                           <td className="py-3 capitalize text-[#59645b]">{runStatus ? runStatus.replaceAll("-", " ") : "Not included"}</td>
                           <td className="py-3 font-mono text-xs text-[#657066]">{device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleTimeString() : "Never"}</td>
                         </tr>
