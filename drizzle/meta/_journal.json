@@ -43,6 +43,13 @@
       "when": 1788361958763,
       "tag": "0005_shiny_hobgoblin",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788977437015,
+      "tag": "0006_dusty_sally_floyd",
+      "breakpoints": true
     }
   ]
 }

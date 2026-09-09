@@ -74,6 +74,9 @@ export const runDevices = sqliteTable(
     runId: text("run_id").notNull(),
     deviceId: text("device_id").notNull(),
     role: text("role", { enum: ["executor", "inspection"] }).notNull(),
+    ticketStrategy: text("ticket_strategy", { enum: ["any", "first", "second"] })
+      .notNull()
+      .default("any"),
     status: text("status").notNull().default("pending"),
   },
   (table) => [
