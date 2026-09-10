@@ -74,10 +74,19 @@ const emptyState: ControlState = {
 const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
 const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/latest";
 
-function supportsFleetExecution(version: string) {
-  const match = /^(\d+)\.(\d+)\./.exec(version);
+function versionAtLeast(version: string, required: [number, number, number]) {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!match) return false;
-  return Number(match[1]) > 0 || Number(match[2]) >= 11;
+  const current = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < required.length; index += 1) {
+    if (current[index]! > required[index]!) return true;
+    if (current[index]! < required[index]!) return false;
+  }
+  return true;
+}
+
+function supportsFastRelease(version: string) {
+  return versionAtLeast(version, [0, 12, 1]);
 }
 
 function sameEventPage(left: unknown, right: string) {
@@ -95,7 +104,7 @@ function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
   if (device.approvalStatus !== "approved") return "Waiting for approval";
   if (!device.online) return "Offline";
   if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
-  if (!supportsFleetExecution(device.version)) return "Update to v0.11.0";
+  if (!supportsFastRelease(device.version)) return "Update to v0.12.1";
   if (!device.encryptionReady) return "Password security not ready";
   if (device.state.pageReady !== true) return "Open the event page";
   if (!sameEventPage(device.state.eventUrl, eventUrl)) return "Wrong event page";
@@ -236,7 +245,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const latestRun = activeRun ?? state.runs[0];
   const onlineDevices = state.devices.filter((device) => device.online);
   const pendingDevices = state.devices.filter((device) => device.approvalStatus === "pending");
-  const outdatedDevices = state.devices.filter((device) => !supportsFleetExecution(device.version));
+  const outdatedDevices = state.devices.filter((device) => !supportsFastRelease(device.version));
   const activeLeases = state.leases.filter((lease) => ["offered", "active"].includes(String(lease.status)));
   const selectedIdSet = new Set(selected);
   const selectedDevices = selected
@@ -546,6 +555,34 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
   };
 
+  const resetSelectedDevices = async () => {
+    if (!selected.length) {
+      setNotice("Select at least one device to reset.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Reset AUTOBOT on ${selected.length} selected device${selected.length === 1 ? "" : "s"}?\n\n` +
+        "This stops the active run and clears this event's local one-shot locks so the selected devices can be activated again. Only reset after the organizer-owned test tickets have been deleted or relisted.",
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({ action: "reset-devices", deviceIds: selected });
+      const count = Number(result.devices ?? selected.length);
+      setEventPassword("");
+      setNotice(
+        `Reset sent to ${count} device${count === 1 ? "" : "s"}. ` +
+          "Keep Chrome and the event page open; each device will be ready for another activation.",
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleDevice = (id: string) => {
     if (!selected.includes(id) && selected.length >= 20) {
       setNotice("The classroom fleet is capped at 20 selected devices.");
@@ -652,7 +689,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       {outdatedDevices.length > 0 ? (
         <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
-        <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.11.0 update for remote event opening and current live-test recognition.</span>
+        <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.12.1 fast-release update before the next live activation.</span>
             <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download current release</a>
           </div>
         </div>
@@ -993,6 +1030,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   {busy ? "Working…" : mode === "live" ? `Activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run fleet rehearsal"}
                 </button>
                 <button disabled={busy || !activeRun} onClick={stopAll} className="rounded-full border border-[#cbd2c7] px-5 py-3 text-sm font-bold text-[#4d594f] disabled:opacity-40">Stop active run</button>
+                <button disabled={busy || selected.length === 0} onClick={resetSelectedDevices} className="rounded-full border border-[#b46d57] px-5 py-3 text-sm font-bold text-[#8b4f3f] disabled:opacity-40">Reset selected devices</button>
               </div>
             </article>
 

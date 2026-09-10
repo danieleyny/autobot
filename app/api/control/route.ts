@@ -88,12 +88,23 @@ function sameEventTitle(left: unknown, right: unknown): boolean {
   return normalize(left) === normalize(right);
 }
 
-function supportsFleetExecution(version: string): boolean {
-  const match = /^(\d+)\.(\d+)\./.exec(version);
+function versionAtLeast(version: string, required: [number, number, number]): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  return major > 0 || minor >= 11;
+  const current = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < required.length; index += 1) {
+    if (current[index]! > required[index]!) return true;
+    if (current[index]! < required[index]!) return false;
+  }
+  return true;
+}
+
+function supportsFleetExecution(version: string): boolean {
+  return versionAtLeast(version, [0, 11, 0]);
+}
+
+function supportsFastRelease(version: string): boolean {
+  return versionAtLeast(version, [0, 12, 1]);
 }
 
 function optionalText(value: unknown, label: string, maxLength: number): string | null {
@@ -165,22 +176,25 @@ export async function GET() {
   ]);
 
   const presenceCheckedAt = nowMs();
-  const devices = (deviceResult.results as unknown as DeviceRow[]).map((device) => ({
-    id: device.id,
-    name: device.name,
-    contactEmail: device.contact_email,
-    contactPhone: device.contact_phone,
-    description: device.description,
-    version: device.version,
-    mode: device.mode,
-    approvalStatus: device.approval_status,
-    state: parseJson<Record<string, unknown>>(device.state_json, {}),
-    encryptionPublicKey: device.public_key,
-    encryptionReady: Boolean(device.public_key),
-    lastSeenAt: device.last_seen_at,
-    online: isDeviceOnline(device.last_seen_at, presenceCheckedAt),
-    createdAt: device.created_at,
-  }));
+  const devices = (deviceResult.results as unknown as DeviceRow[]).map((device) => {
+    const state = parseJson<Record<string, unknown>>(device.state_json, {});
+    return {
+      id: device.id,
+      name: device.name,
+      contactEmail: device.contact_email,
+      contactPhone: device.contact_phone,
+      description: device.description,
+      version: device.version,
+      mode: device.mode,
+      approvalStatus: device.approval_status,
+      state,
+      encryptionPublicKey: device.public_key,
+      encryptionReady: Boolean(device.public_key),
+      lastSeenAt: device.last_seen_at,
+      online: isDeviceOnline(device.last_seen_at, presenceCheckedAt, state),
+      createdAt: device.created_at,
+    };
+  });
   const runs = (runResult.results as unknown as RunRow[]).map((run) => ({
     id: run.id,
     title: run.title,
@@ -342,7 +356,7 @@ export async function POST(request: NextRequest) {
         const placeholders = selectedIds.map(() => "?").join(",");
         const selectedDevices = await getD1()
           .prepare(
-            `SELECT id, name, version, approval_status, last_seen_at FROM devices
+            `SELECT id, name, version, approval_status, last_seen_at, state_json FROM devices
              WHERE owner_id = ? AND id IN (${placeholders})`,
           )
           .bind(user.userId, ...selectedIds)
@@ -352,6 +366,7 @@ export async function POST(request: NextRequest) {
             version: string;
             approval_status: string;
             last_seen_at: number | null;
+            state_json: string;
           }>();
         if (selectedDevices.results.length !== selectedIds.length) {
           throw new Error("One or more selected devices do not belong to this controller.");
@@ -359,7 +374,15 @@ export async function POST(request: NextRequest) {
         if (selectedDevices.results.some((device) => device.approval_status !== "approved")) {
           throw new Error("Approve every selected device before opening an event.");
         }
-        if (selectedDevices.results.some((device) => !isDeviceOnline(device.last_seen_at, nowMs()))) {
+        if (
+          selectedDevices.results.some((device) =>
+            !isDeviceOnline(
+              device.last_seen_at,
+              nowMs(),
+              parseJson<Record<string, unknown>>(device.state_json, {}),
+            )
+          )
+        ) {
           throw new Error("Every selected device must be online before opening an event.");
         }
         const needsUpdate = selectedDevices.results.filter((device) => !supportsFleetExecution(device.version));
@@ -519,7 +542,7 @@ export async function POST(request: NextRequest) {
         if (deviceStates.some((device) => device.approval_status !== "approved")) {
           throw new Error("Approve every selected device before arming.");
         }
-        if (deviceStates.some((device) => !isDeviceOnline(device.last_seen_at, nowMs()))) {
+        if (deviceStates.some((device) => !isDeviceOnline(device.last_seen_at, nowMs(), device.state))) {
           throw new Error("Every selected device must be online before arming.");
         }
         if (deviceStates.some((device) => device.state.controlConnected !== true)) {
@@ -531,8 +554,8 @@ export async function POST(request: NextRequest) {
         if (deviceStates.some((device) => !sameEventTitle(device.state.eventTitle, run.event_title))) {
           throw new Error("Every selected device must show the configured event title before arming.");
         }
-        if (run.mode === "live" && deviceStates.some((device) => !supportsFleetExecution(device.version))) {
-          throw new Error("Every selected device must run AUTOBOT v0.11.0 or newer for a live fleet test.");
+        if (run.mode === "live" && deviceStates.some((device) => !supportsFastRelease(device.version))) {
+          throw new Error("Every selected device must run AUTOBOT v0.12.1 or newer for the fast-release live test.");
         }
 
         const encryptedSecrets =
@@ -739,6 +762,80 @@ export async function POST(request: NextRequest) {
         ]);
         await audit({ ownerId: user.userId, runId, source: "control", action: "run-stopped" });
         return NextResponse.json({ ok: true });
+      }
+
+      case "reset-devices": {
+        const selectedIds = Array.isArray(body.deviceIds)
+          ? [...new Set(body.deviceIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
+          : [];
+        if (!selectedIds.length) throw new Error("Select at least one device to reset.");
+        if (selectedIds.length > 20) throw new Error("Select no more than 20 devices.");
+
+        const placeholders = selectedIds.map(() => "?").join(",");
+        const devices = await getD1()
+          .prepare(
+            `SELECT id, name, approval_status FROM devices
+             WHERE owner_id = ? AND id IN (${placeholders})`,
+          )
+          .bind(user.userId, ...selectedIds)
+          .all<{ id: string; name: string; approval_status: string }>();
+        if (devices.results.length !== selectedIds.length) {
+          throw new Error("One or more selected devices do not belong to this controller.");
+        }
+        if (devices.results.some((device) => device.approval_status !== "approved")) {
+          throw new Error("Approve every selected device before resetting it.");
+        }
+
+        const activeRun = await getD1()
+          .prepare(
+            "SELECT id FROM runs WHERE owner_id = ? AND status IN ('draft', 'armed', 'blocked') LIMIT 1",
+          )
+          .bind(user.userId)
+          .first<{ id: string }>();
+        const timestamp = nowMs();
+        const db = getD1();
+        const statements = [
+          db.prepare(
+            `UPDATE commands SET status = 'acknowledged', acknowledged_at = ?
+             WHERE owner_id = ? AND device_id IN (${placeholders})
+               AND status IN ('queued', 'delivered')`,
+          ).bind(timestamp, user.userId, ...selectedIds),
+          ...selectedIds.map((deviceId) =>
+            db.prepare(
+              `INSERT INTO commands
+               (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+               VALUES (?, ?, ?, NULL, 'reset', '{}', 'queued', ?)`,
+            ).bind(crypto.randomUUID(), user.userId, deviceId, timestamp),
+          ),
+        ];
+        if (activeRun) {
+          statements.push(
+            db.prepare("UPDATE runs SET status = 'stopped', updated_at = ? WHERE id = ? AND owner_id = ?")
+              .bind(timestamp, activeRun.id, user.userId),
+            db.prepare(
+              "UPDATE leases SET status = 'blocked', completed_at = ? WHERE run_id = ? AND status IN ('offered', 'active')",
+            ).bind(timestamp, activeRun.id),
+            db.prepare(
+              `UPDATE run_devices SET status = 'stopped'
+               WHERE run_id = ?
+                 AND status NOT IN
+                   ('submitted', 'confirmed', 'submitted-unconfirmed', 'already-reserved', 'failed', 'local-override', 'stopped')`,
+            ).bind(activeRun.id),
+          );
+        }
+        await db.batch(statements);
+        await audit({
+          ownerId: user.userId,
+          runId: activeRun?.id ?? null,
+          source: "control",
+          action: "fleet-reset-requested",
+          detail: { devices: selectedIds.length },
+        });
+        return NextResponse.json({
+          ok: true,
+          devices: selectedIds.length,
+          stoppedRun: Boolean(activeRun),
+        });
       }
 
       default:

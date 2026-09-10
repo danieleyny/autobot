@@ -234,11 +234,11 @@ export async function POST(request: NextRequest) {
           .run();
       }
 
-      if (runId && phase === "execution-started") {
+      if (runId && command?.type === "arm-live" && ["accepted", "execution-started"].includes(phase)) {
         const activated = await getD1()
           .prepare(
-            `UPDATE leases SET status = 'active', activated_at = ?
-             WHERE run_id = ? AND device_id = ? AND status = 'offered'`,
+            `UPDATE leases SET status = 'active', activated_at = COALESCE(activated_at, ?)
+             WHERE run_id = ? AND device_id = ? AND status IN ('offered', 'active')`,
           )
           .bind(timestamp, runId, device.id)
           .run();
