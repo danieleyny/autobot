@@ -81,7 +81,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.12.2-test",
+    version: "0.13.0-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -102,7 +102,7 @@ async function poll(
     "/api/device",
     {
       action: "poll",
-      version: "0.12.2-test",
+      version: "0.13.0-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -115,6 +115,13 @@ async function poll(
         eventUrl: "https://posh.vip/e/test-release",
         eventTitle,
         pollIntervalMs: 15_000,
+        profileMode: "multi",
+        hostId: "test-profile-host",
+        hostName: "Test Profile Host",
+        workerId: `worker-${token.slice(0, 6)}`,
+        workerIndex: token.charCodeAt(0) % 4 + 1,
+        workerCount: 2,
+        hostResources: { totalMemoryMb: 16_384, freeMemoryMb: 10_240, cpuCount: 8 },
         ...statusOverrides,
       },
     },
@@ -181,7 +188,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.12.2-test",
+      version: "0.13.0-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },
@@ -190,6 +197,32 @@ try {
   await jsonRequest("/api/control", { action: "approve-device", deviceId: executorTwo.id }, { cookie });
   await poll(executorOne.token, executorOne.keys, eventTitle);
   await poll(executorTwo.token, executorTwo.keys, eventTitle);
+
+  await jsonRequest(
+    "/api/control",
+    { action: "launch-workers", deviceIds: [executorOne.id, executorTwo.id] },
+    { cookie },
+  );
+  const launchOnePoll = await poll(executorOne.token, executorOne.keys, eventTitle);
+  const launchTwoPoll = await poll(executorTwo.token, executorTwo.keys, eventTitle);
+  const launchOneCommand = launchOnePoll.command as Record<string, unknown>;
+  const launchTwoCommand = launchTwoPoll.command as Record<string, unknown>;
+  assert.equal(launchOneCommand.type, "launch-worker");
+  assert.equal(launchTwoCommand.type, "launch-worker");
+  assert.equal(
+    (launchOneCommand.payload as Record<string, unknown>).startUrl,
+    "https://posh.vip/",
+  );
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: launchOneCommand.id, phase: "worker-launched" },
+    { token: executorOne.token },
+  );
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: launchTwoCommand.id, phase: "worker-launched" },
+    { token: executorTwo.token },
+  );
 
   await jsonRequest(
     "/api/control",
@@ -213,7 +246,7 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
-  assert.equal(directoryState.controllerRevision, "0.12.2");
+  assert.equal(directoryState.controllerRevision, "0.13.0");
   const firstSeenAt = Number(directoryDevice?.lastSeenAt);
   await poll(executorOne.token, executorOne.keys, eventTitle);
   const duplicateState = await jsonRequest("/api/control", null, { cookie });
@@ -497,7 +530,7 @@ try {
   );
   const afterRemoval = await jsonRequest("/api/control", null, { cookie });
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
-  console.log("Control integration passed: enrollment, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
+  console.log("Control integration passed: profile-host launch, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }

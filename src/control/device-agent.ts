@@ -10,7 +10,8 @@ type ControllerCommand = {
   payload: Record<string, unknown>;
 };
 
-const VERSION = "0.12.2";
+const VERSION = "0.13.0";
+const BRIDGE_PROTOCOL_VERSION = "0.12.2";
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 const IDLE_POLL_INTERVAL_MS = 15_000;
 const CLOCK_SAMPLE_LIMIT = 8;
@@ -198,7 +199,10 @@ app.use((request, response, next) => {
     response.sendStatus(204);
     return;
   }
-  if (request.path.startsWith("/extension/") && request.get("x-autobot-bridge") !== VERSION) {
+  if (
+    request.path.startsWith("/extension/") &&
+    request.get("x-autobot-bridge") !== BRIDGE_PROTOCOL_VERSION
+  ) {
     response.status(401).json({ error: "Extension bridge version is missing." });
     return;
   }

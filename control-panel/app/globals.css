@@ -54,6 +54,11 @@ button {
   box-shadow: 0 0 0 4px rgb(119 184 42 / 12%);
 }
 
+.device-dot.waiting {
+  background: #d99b3d;
+  box-shadow: 0 0 0 4px rgb(217 155 61 / 12%);
+}
+
 .device-dot.local {
   background: #879188;
   box-shadow: 0 0 0 4px rgb(135 145 136 / 12%);

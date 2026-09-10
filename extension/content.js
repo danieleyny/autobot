@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.12.2";
+  const VERSION = "0.13.0";
   const STATE_KEY = `autobot:${location.pathname}`;
   const TIMELINE_KEY = `autobot-timeline:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
@@ -78,7 +78,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.12.2</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.13.0</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>

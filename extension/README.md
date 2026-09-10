@@ -7,9 +7,9 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.12.2
+## Optional Command Center in v0.13.0
 
-The normal panel remains fully standalone. If the local v0.12.2 device bridge is
+The normal panel remains fully standalone. If the local v0.12.2-or-newer device bridge is
 running, the bottom of the panel shows the paired device name and a green
 connection indicator. **Allow command center** controls whether that device may
 accept central inspection, live-fleet, stop, and reset commands.
@@ -26,6 +26,12 @@ execution lease; unselected devices do nothing. Its browser encrypts the
 password separately with each device's public key, and only that device's local
 bridge decrypts it. The controller never receives a readable password. POSH
 login, OTP, Cloudflare, browser sessions, and completion locks remain local.
+
+v0.13.0 also supports the optional secondary multi-profile host. Its setup
+assistant creates a private numbered copy of this extension for every isolated
+Chrome worker. Load only the numbered path printed for that profile; do not load
+the ordinary package `extension` folder into a profile worker. Classic mode is
+unchanged and continues to use the ordinary `extension` folder.
 
 ## Install locally
 

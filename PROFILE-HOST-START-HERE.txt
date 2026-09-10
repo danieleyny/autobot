@@ -1,0 +1,64 @@
+AUTOBOT v0.13.0 - MULTI-PROFILE HOST QUICK START
+================================================
+
+This is the optional secondary system. It runs 1-4 isolated Chrome profiles on
+one physical Mac or Windows computer. Each profile has its own POSH login,
+AUTOBOT worker identity, encrypted password delivery, slot assignment, and
+one-use execution lease. The original classic setup remains available.
+
+BEFORE STARTING
+
+1. Install current Google Chrome and Node.js LTS.
+2. In the Command Center, create a 48-hour enrollment code with one available
+   use for every Chrome worker you plan to create.
+3. Close ordinary Chrome windows on this computer for the smoothest first
+   setup.
+
+RUN THE ASSISTANT
+
+Mac: double-click SETUP-PROFILE-HOST-MAC.command
+Windows: double-click SETUP-PROFILE-HOST-WINDOWS.cmd
+
+Enter the enrollment code, a name for the physical computer, and a worker count
+from 1 through 4. The assistant creates persistent isolated Chrome data folders,
+pairs each worker, installs automatic bridge startup, opens the profile windows,
+and prints one numbered extension-folder path per worker.
+
+ONE-TIME SETUP IN EACH PROFILE WINDOW
+
+1. Open chrome://extensions in that numbered profile.
+2. Turn on Developer mode.
+3. Click Load unpacked.
+4. Select the matching numbered extension folder printed by the assistant.
+5. Confirm the AUTOBOT popup shows the correct host and Profile number.
+6. Sign into that profile's own POSH account and complete OTP/CAPTCHA manually.
+7. Turn off Chrome password-save prompts and notification requests.
+8. Approve each new worker in Command Center > Operations.
+
+EVERY LATER SESSION
+
+The host bridge starts when you sign into the computer. Open Command Center >
+Profile hosts and click Launch all workers. Saved profile cookies are reused,
+but any POSH login, OTP, CAPTCHA, security, or consent prompt remains manual.
+Then click Select for operations, send the event URL, and run a rehearsal.
+
+IMPORTANT
+
+- Do not load the regular extracted extension folder into these profiles. Use
+  the matching numbered folder printed by the profile-host assistant.
+- Do not load one worker's extension folder into a different profile.
+- A Chrome profile is not a way around POSH limits or verification.
+- Use only the approved organizer-owned test event and separate authorized
+  accounts.
+- The profile host listens only on 127.0.0.1:4182. The original classic bridge
+  remains separate on 127.0.0.1:4181.
+- Run npm run test:profiles from the extracted folder for a local routing test.
+
+IF A WORKER WAS REMOVED OR REVOKED
+
+Create a fresh enrollment code, then replace only that worker. This keeps its
+Chrome profile and POSH cookies. Example for Profile 2:
+
+  npm run profiles:setup -- --code=NEW_ENROLLMENT_CODE --replace-worker=2 --no-onboarding
+
+Approve the replacement worker in the Command Center.

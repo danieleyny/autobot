@@ -1,3 +1,10 @@
+const profileWorker = globalThis.AUTOBOT_PROFILE_WORKER;
+if (profileWorker?.workerName) {
+  const label = document.querySelector("#worker-label");
+  label.hidden = false;
+  label.textContent = `${profileWorker.hostName} · Profile ${profileWorker.workerIndex}`;
+}
+
 document.querySelector("#open-event").addEventListener("click", async () => {
   const stored = await chrome.storage.local.get("autobot:last-event-url");
   const saved = stored["autobot:last-event-url"];

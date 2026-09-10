@@ -8,8 +8,17 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.12.2 includes an optional multi-device Command Center for a variable
-fleet of 1–20 laptops. Every device keeps the original local extension controls;
+AUTOBOT v0.13.0 adds an optional secondary multi-profile host while preserving
+the original one-computer-per-device system. A physical Mac or Windows computer
+can host 1-4 isolated Chrome workers, each with its own POSH session, extension
+identity, encrypted command channel, ticket-slot assignment, and one-use lease.
+The Command Center groups those workers by host and can launch all of a host's
+profiles with one click after their one-time setup. The classic bridge stays on
+port 4181; the profile host uses port 4182, so both modes can coexist without
+changing an existing pairing.
+
+The Command Center supports a variable fleet of 1-20 workers or classic
+laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
 password delivery, remote event-page opening, readiness checks, rehearsal,
 arming, per-device results, a fleet directory, stop, audit, and device-revocation
@@ -18,7 +27,7 @@ and second displayed ticket slots, and records the target used by each laptop.
 This release also holds an unlocked event until the exact release time, avoids a
 release-time refresh, retries a replaced RSVP control once, and recognizes
 POSH's post-RSVP update-preference dialog as a confirmed reservation. The
-v0.12.2 prepared-release path synchronizes each laptop to the controller clock,
+prepared-release path synchronizes each worker to the controller clock,
 removes hosted network and database waits from the exact release moment, reacts
 to page changes immediately, opens and verifies each assigned free-ticket
 selector before release, and adds a central reset-and-reactivate command. Page
@@ -54,11 +63,61 @@ Use these steps when adding a friend's computer to the hosted Command Center:
 8. Confirm the laptop is ready in the fleet overview, then run a **Rehearsal**
    before attempting a controlled live test.
 
-To upgrade an already paired laptop, run the setup assistant from the extracted
-v0.12.2 folder. It preserves the saved device identity and Command Center
+## Optional secondary multi-profile host
+
+Use this when one physical computer should run 1-4 separate authorized POSH
+accounts. The original classic setup above remains supported and does not need
+to be removed.
+
+1. Open `OPEN-FIRST-AUTOBOT-PROFILE-HOST-GUIDE.pdf` from the release package.
+2. Create a 48-hour enrollment code with one available use per planned Chrome
+   worker.
+3. On Mac, run `SETUP-PROFILE-HOST-MAC.command`. On Windows, run
+   `SETUP-PROFILE-HOST-WINDOWS.cmd`.
+4. Enter a physical-computer label and choose 1-4 workers.
+5. The assistant opens the isolated profiles and prints a numbered extension
+   path for each one. In each profile, use `chrome://extensions` > **Load
+   unpacked** and select only its matching numbered folder.
+6. Sign each profile into its own POSH account and approve each worker in the
+   dashboard.
+7. On later sessions, open **Profile hosts** in the dashboard and click
+   **Launch all workers**, then **Select for operations**.
+
+Chrome requires each unpacked extension to be loaded manually once. POSH login,
+OTP, CAPTCHA, security, and consent prompts also remain manual. After setup,
+profile data and login cookies persist in separate local directories.
+
+The equivalent manual commands are:
+
+```bash
+npm install
+npm run profiles:setup -- \
+  --controller=https://autobot-command-center.avgschnook.chatgpt.site \
+  --code=ENROLLMENT_CODE \
+  --name="Studio Computer 1" \
+  --workers=4
+npm run profiles:install
+npm run profiles:host
+```
+
+Validate the isolated local routing without opening Chrome:
+
+```bash
+npm run test:profiles
+```
+
+If one profile worker is removed or revoked, create a fresh enrollment code and
+replace only that worker while preserving its Chrome profile data:
+
+```bash
+npm run profiles:setup -- --code=NEW_ENROLLMENT_CODE --replace-worker=2 --no-onboarding
+```
+
+To upgrade an already paired classic laptop, run the setup assistant from the
+extracted v0.13.0 folder. It preserves the saved device identity and Command Center
 pairing; do not remove or revoke the laptop first. Remove the old unpacked
 AUTOBOT extension in `chrome://extensions`, load the new package's `extension`
-folder, and restart the computer once so the startup bridge switches to v0.12.2.
+folder, and restart the computer once so the startup bridge switches to v0.13.0.
 
 For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
@@ -77,7 +136,7 @@ enrollment code works for the configured number of laptops for up to 48 hours;
 every enrolled laptop remains blocked until approved in the dashboard. POSH
 sign-in, OTP, and CAPTCHA/Cloudflare checks remain local and manual. The
 dashboard may deliver an event password encrypted separately for each selected
-device. Prepared live activation requires the matching v0.12.2 bridge and
+device. Prepared live activation requires the matching v0.12.2-or-newer bridge and
 extension on every selected laptop.
 
 ## Install
@@ -174,7 +233,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.12.2. On a POSH event page,
+Reload the unpacked extension after installing v0.13.0. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws

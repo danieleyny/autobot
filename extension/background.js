@@ -1,5 +1,9 @@
-const BRIDGE_URL = "http://127.0.0.1:4181";
-const BRIDGE_VERSION = "0.12.2";
+importScripts("worker-config.js");
+
+const PROFILE_WORKER = globalThis.AUTOBOT_PROFILE_WORKER;
+const BRIDGE_PORT = Number(PROFILE_WORKER?.bridgePort) || 4181;
+const BRIDGE_URL = `http://127.0.0.1:${BRIDGE_PORT}`;
+const BRIDGE_PROTOCOL_VERSION = "0.12.2";
 const LAST_EVENT_KEY = "autobot:last-event-url";
 const NAVIGATION_ALARM = "autobot-navigation-poll";
 let navigationPolling = false;
@@ -9,7 +13,13 @@ async function bridgePost(path, body) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-autobot-bridge": BRIDGE_VERSION
+      "x-autobot-bridge": BRIDGE_PROTOCOL_VERSION,
+      ...(PROFILE_WORKER?.workerId
+        ? {
+            "x-autobot-worker": PROFILE_WORKER.workerId,
+            "x-autobot-worker-token": PROFILE_WORKER.bridgeToken
+          }
+        : {})
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(2_500)
