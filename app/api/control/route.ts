@@ -340,6 +340,80 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      case "launch-workers": {
+        const selectedIds = Array.isArray(body.deviceIds)
+          ? [...new Set(body.deviceIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
+          : [];
+        if (!selectedIds.length) throw new Error("Select at least one profile worker.");
+        if (selectedIds.length > 20) throw new Error("Launch no more than 20 profile workers at once.");
+        const activeRun = await getD1()
+          .prepare("SELECT id FROM runs WHERE owner_id = ? AND status IN ('draft', 'armed', 'blocked') LIMIT 1")
+          .bind(user.userId)
+          .first<{ id: string }>();
+        if (activeRun) throw new Error("Stop or finish the active run before launching browser workers.");
+
+        const placeholders = selectedIds.map(() => "?").join(",");
+        const selectedDevices = await getD1()
+          .prepare(
+            `SELECT id, name, version, approval_status, last_seen_at, state_json FROM devices
+             WHERE owner_id = ? AND id IN (${placeholders})`,
+          )
+          .bind(user.userId, ...selectedIds)
+          .all<{
+            id: string;
+            name: string;
+            version: string;
+            approval_status: string;
+            last_seen_at: number | null;
+            state_json: string;
+          }>();
+        if (selectedDevices.results.length !== selectedIds.length) {
+          throw new Error("One or more profile workers do not belong to this controller.");
+        }
+        const timestamp = nowMs();
+        for (const device of selectedDevices.results) {
+          const state = parseJson<Record<string, unknown>>(device.state_json, {});
+          if (device.approval_status !== "approved") {
+            throw new Error(`Approve ${device.name} before launching its browser profile.`);
+          }
+          if (!versionAtLeast(device.version, [0, 13, 0]) || state.profileMode !== "multi") {
+            throw new Error(`${device.name} is a classic device, not a multi-profile worker.`);
+          }
+          if (!isDeviceOnline(device.last_seen_at, timestamp, state)) {
+            throw new Error(`${device.name}'s profile-host service is offline.`);
+          }
+        }
+
+        const db = getD1();
+        await db.batch([
+          db.prepare(
+            `UPDATE commands SET status = 'acknowledged', acknowledged_at = ?
+             WHERE owner_id = ? AND device_id IN (${placeholders}) AND type = 'launch-worker'
+               AND status IN ('queued', 'delivered')`,
+          ).bind(timestamp, user.userId, ...selectedIds),
+          ...selectedIds.map((deviceId) =>
+            db.prepare(
+              `INSERT INTO commands
+               (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+               VALUES (?, ?, ?, NULL, 'launch-worker', ?, 'queued', ?)`,
+            ).bind(
+              crypto.randomUUID(),
+              user.userId,
+              deviceId,
+              JSON.stringify({ startUrl: "https://posh.vip/" }),
+              timestamp,
+            ),
+          ),
+        ]);
+        await audit({
+          ownerId: user.userId,
+          source: "control",
+          action: "profile-workers-launched",
+          detail: { workers: selectedIds.length },
+        });
+        return NextResponse.json({ ok: true, workers: selectedIds.length });
+      }
+
       case "open-event": {
         const eventUrl = validateEventUrl(body.eventUrl);
         const selectedIds = Array.isArray(body.deviceIds)

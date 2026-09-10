@@ -62,6 +62,12 @@ type ControlState = {
   serverTime: number;
 };
 
+type ProfileHostGroup = {
+  id: string;
+  name: string;
+  workers: Device[];
+};
+
 const emptyState: ControlState = {
   devices: [],
   runs: [],
@@ -162,7 +168,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [view, setView] = useState<"operations" | "directory">("operations");
+  const [view, setView] = useState<"operations" | "hosts" | "directory">("operations");
   const [selected, setSelected] = useState<string[]>([]);
   const [profileDrafts, setProfileDrafts] = useState<
     Record<string, { contactEmail: string; contactPhone: string; description: string }>
@@ -249,6 +255,18 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const onlineDevices = state.devices.filter((device) => device.online);
   const pendingDevices = state.devices.filter((device) => device.approvalStatus === "pending");
   const outdatedDevices = state.devices.filter((device) => !supportsFastRelease(device.version));
+  const profileWorkers = state.devices.filter((device) => device.state.profileMode === "multi");
+  const profileHostGroups = [...profileWorkers.reduce((groups, worker) => {
+    const hostId = typeof worker.state.hostId === "string" ? worker.state.hostId : "unknown-host";
+    const hostName = typeof worker.state.hostName === "string" ? worker.state.hostName : "Profile host";
+    const current = groups.get(hostId) ?? { id: hostId, name: hostName, workers: [] };
+    current.workers.push(worker);
+    current.workers.sort(
+      (left, right) => Number(left.state.workerIndex ?? 0) - Number(right.state.workerIndex ?? 0),
+    );
+    groups.set(hostId, current);
+    return groups;
+  }, new Map<string, ProfileHostGroup>()).values()];
   const activeLeases = state.leases.filter((lease) => ["offered", "active"].includes(String(lease.status)));
   const selectedIdSet = new Set(selected);
   const selectedDevices = selected
@@ -585,6 +603,47 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
   };
 
+  const launchProfileWorkers = async (host: ProfileHostGroup) => {
+    const launchable = host.workers.filter(
+      (worker) => worker.online && worker.approvalStatus === "approved",
+    );
+    if (!launchable.length) {
+      setNotice(`${host.name}'s profile-host service is offline or still awaiting approval.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({
+        action: "launch-workers",
+        deviceIds: launchable.map((worker) => worker.id),
+      });
+      const count = Number(result.workers ?? launchable.length);
+      setNotice(
+        `${host.name} is opening ${count} isolated Chrome worker${count === 1 ? "" : "s"}. ` +
+          "They start in sequence to protect computer performance.",
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectHostForOperations = (host: ProfileHostGroup) => {
+    const workerIds = host.workers
+      .filter((worker) => worker.online && worker.approvalStatus === "approved")
+      .map((worker) => worker.id);
+    setSelected(workerIds);
+    setView("operations");
+    setNotice(
+      workerIds.length
+        ? `Selected ${workerIds.length} worker${workerIds.length === 1 ? "" : "s"} from ${host.name}.`
+        : `${host.name} has no approved online workers yet.`,
+    );
+  };
+
   const toggleDevice = (id: string) => {
     if (!selected.includes(id) && selected.length >= 20) {
       setNotice("The classroom fleet is capped at 20 selected devices.");
@@ -660,6 +719,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 className={`rounded-full px-3 py-1.5 ${view === "operations" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
               >
                 Operations
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("hosts")}
+                className={`rounded-full px-3 py-1.5 ${view === "hosts" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
+              >
+                Profile hosts
               </button>
               <button
                 type="button"
@@ -761,7 +827,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                           </span>
                           <div>
                             <h3 className="font-semibold">{device.name}</h3>
-                            <p className="mt-0.5 text-xs text-[#6b746c]">{device.mode === "managed" ? "Controller connected" : "Standalone/local"}</p>
+                            <p className="mt-0.5 text-xs text-[#6b746c]">
+                              {device.state.profileMode === "multi"
+                                ? `${String(device.state.hostName || "Profile host")} · Chrome worker`
+                                : device.mode === "managed"
+                                  ? "Controller connected"
+                                  : "Standalone/local"}
+                            </p>
                           </div>
                         </div>
                         <span className={`device-dot ${device.online ? "ready" : "local"}`} />
@@ -1140,6 +1212,129 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           </article>
         </section>
       </div>
+
+      <section className={`${view === "hosts" ? "block" : "hidden"} mx-auto max-w-[1500px] px-5 py-6 lg:px-8`}>
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Secondary system</p>
+                <h2 className="mt-1 text-2xl font-semibold tracking-tight">Multi-profile Chrome hosts</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#69736b]">
+                  Each physical computer can run up to four isolated Chrome workers. Every worker keeps its own POSH login, encrypted command channel, ticket assignment and one-use lease. Classic one-laptop devices remain unchanged.
+                </p>
+              </div>
+              <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-xs font-semibold text-[#4f5b51]">
+                {profileHostGroups.length} host{profileHostGroups.length === 1 ? "" : "s"} · {profileWorkers.length} workers
+              </span>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              {profileHostGroups.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-[#b8c0b5] bg-[#fbfcfa] p-6">
+                  <h3 className="font-semibold">No profile hosts are connected yet</h3>
+                  <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-6 text-[#69736b]">
+                    <li>Create a 48-hour enrollment code in Operations with room for every Chrome worker.</li>
+                    <li>Run the Multi-Profile Host setup file once on the physical computer.</li>
+                    <li>Load each numbered extension into its matching Chrome window, sign into POSH, and approve the workers here.</li>
+                  </ol>
+                  <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="mt-5 inline-flex rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white">
+                    Download profile-host release
+                  </a>
+                </div>
+              ) : (
+                profileHostGroups.map((host) => {
+                  const onlineWorkers = host.workers.filter((worker) => worker.online);
+                  const connectedBrowsers = host.workers.filter(
+                    (worker) => worker.state.extensionConnected === true,
+                  );
+                  const eventReadyWorkers = host.workers.filter(
+                    (worker) => worker.state.pageReady === true,
+                  );
+                  const sampleResources = host.workers.find(
+                    (worker) => worker.state.hostResources && typeof worker.state.hostResources === "object",
+                  )?.state.hostResources as Record<string, unknown> | undefined;
+                  return (
+                    <div key={host.id} className="rounded-2xl border border-[#d7dcd3] bg-[#fbfcfa] p-4 sm:p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className={`device-dot ${onlineWorkers.length === host.workers.length ? "ready" : "local"}`} />
+                            <h3 className="text-lg font-semibold">{host.name}</h3>
+                          </div>
+                          <p className="mt-1 text-sm text-[#69736b]">
+                            {onlineWorkers.length}/{host.workers.length} host channels online · {connectedBrowsers.length} browsers open · {eventReadyWorkers.length} event ready
+                          </p>
+                          {sampleResources ? (
+                            <p className="mt-1 font-mono text-xs text-[#7a837b]">
+                              {Number(sampleResources.cpuCount || 0)} CPU threads · {Math.round(Number(sampleResources.freeMemoryMb || 0) / 1024)} GB free of {Math.round(Number(sampleResources.totalMemoryMb || 0) / 1024)} GB
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" disabled={busy || Boolean(activeRun)} onClick={() => launchProfileWorkers(host)} className="rounded-full bg-[#b8ff5a] px-4 py-2 text-xs font-bold text-[#172018] disabled:opacity-40">
+                            Launch all workers
+                          </button>
+                          <button type="button" onClick={() => selectHostForOperations(host)} className="rounded-full border border-[#cbd2c7] bg-white px-4 py-2 text-xs font-bold text-[#4d594f]">
+                            Select for operations
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        {host.workers.map((worker) => {
+                          const workerIndex = Number(worker.state.workerIndex || 0);
+                          const browserConnected = worker.state.extensionConnected === true;
+                          return (
+                            <div key={worker.id} className="rounded-xl border border-[#e0e5dc] bg-white p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-semibold">Profile {workerIndex || "—"}</p>
+                                  <p className="mt-0.5 text-xs text-[#69736b]">{worker.name}</p>
+                                </div>
+                                <span className={`device-dot ${worker.online && browserConnected ? "ready" : worker.online ? "waiting" : "local"}`} />
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                                <span className={`rounded-full px-2 py-1 ${worker.online ? "bg-[#eaf4d9] text-[#35511e]" : "bg-[#f2e7e3] text-[#7c5248]"}`}>
+                                  {worker.online ? "Host online" : "Host offline"}
+                                </span>
+                                <span className={`rounded-full px-2 py-1 ${browserConnected ? "bg-[#eaf4d9] text-[#35511e]" : "bg-[#eef0ec] text-[#5d675f]"}`}>
+                                  {browserConnected ? "Browser open" : "Browser closed"}
+                                </span>
+                                {worker.approvalStatus === "pending" ? (
+                                  <span className="rounded-full bg-[#fff0d9] px-2 py-1 text-[#79501f]">Approve in Operations</span>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </article>
+
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-[#d7dcd3] bg-[#172018] p-5 text-white">
+              <p className="eyebrow text-[#aeb8af]">Day-of workflow</p>
+              <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm leading-6 text-[#d6ddd6]">
+                <li>Launch every host’s workers.</li>
+                <li>Resolve any POSH login or security prompt.</li>
+                <li>Select the workers for Operations.</li>
+                <li>Open the event, rehearse, then prepare and activate.</li>
+              </ol>
+            </div>
+            <div className="rounded-2xl border border-[#d7dcd3] bg-white p-5">
+              <h3 className="font-semibold">One-time manual step</h3>
+              <p className="mt-2 text-sm leading-6 text-[#69736b]">
+                Chrome requires each unpacked extension to be loaded once in its matching profile. POSH login, OTP and CAPTCHA also remain manual. After that, the profile cookies and worker identity persist across launches.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
 
       <section className={`${view === "directory" ? "block" : "hidden"} mx-auto max-w-[1500px] px-5 py-6 lg:px-8`}>
         <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
