@@ -26,6 +26,9 @@ async function installChromeMock(
     };
     const runtime = {
       async sendMessage(message: Record<string, unknown>) {
+        if (message.type === "autobot:focus-event-tab") {
+          return { ok: true };
+        }
         if (message.type === "autobot:control-poll") {
           return { connected: true, deviceName: "Test Device", command: pending };
         }
@@ -188,15 +191,27 @@ test("live fleet command arms one independent executor without clicking before r
   await page.goto("http://127.0.0.1:4173/event");
   await page.setContent(`
     <title>AUTOBOT Classroom Test Drop</title>
-    <main>
+    <main id="root">
       <h1>AUTOBOT Classroom Test Drop</h1>
       <button id="event-action">RSVP</button>
     </main>
   `);
   await page.evaluate(() => {
-    Object.assign(window, { __fleetClicks: 0 });
-    document.querySelector("#event-action")?.addEventListener("click", () => {
-      (window as unknown as { __fleetClicks: number }).__fleetClicks += 1;
+    Object.assign(window, { __fleetPickerOpens: 0, __fleetTicketAdds: 0 });
+    const root = document.querySelector("#root") as HTMLElement;
+    root.querySelector("#event-action")?.addEventListener("click", () => {
+      (window as unknown as { __fleetPickerOpens: number }).__fleetPickerOpens += 1;
+      root.innerHTML = `
+        <h1>AUTOBOT Classroom Test Drop</h1>
+        <section role="dialog">
+          <article data-sentry-component="EventPageTicketItem">
+            <h6>Free Test RSVP</h6><p>Free</p><button id="add">+</button>
+          </article>
+        </section>
+      `;
+      root.querySelector("#add")?.addEventListener("click", () => {
+        (window as unknown as { __fleetTicketAdds: number }).__fleetTicketAdds += 1;
+      });
     });
   });
   await page.addScriptTag({ path: path.resolve("extension/content.js") });
@@ -211,8 +226,9 @@ test("live fleet command arms one independent executor without clicking before r
         ),
       { timeout: 5_000 }
     )
-    .toContain("accepted");
-  expect(await page.evaluate(() => (window as unknown as { __fleetClicks: number }).__fleetClicks)).toBe(0);
+    .toContain("prepared");
+  expect(await page.evaluate(() => (window as unknown as { __fleetPickerOpens: number }).__fleetPickerOpens)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __fleetTicketAdds: number }).__fleetTicketAdds)).toBe(0);
   await expect(page.locator("#execute")).toBeChecked();
   await expect(page.locator("#event-password")).toHaveValue("fleet-password");
   await expect(page.locator("#release-at")).not.toHaveValue("");
@@ -295,6 +311,17 @@ test("central slot-two assignment selects the second displayed free RSVP", async
       { timeout: 10_000 },
     )
     .toContain("confirmed");
+  const timelineSteps = await page.evaluate(async () => {
+    const localStorage = (window as unknown as {
+      chrome: { storage: { local: { get(keys: string): Promise<Record<string, unknown>> } } };
+    }).chrome.storage.local;
+    const stored = await localStorage.get("autobot-timeline:/event");
+    const timeline = stored["autobot-timeline:/event"] as { entries?: Array<{ step?: string }> } | undefined;
+    return timeline?.entries?.map((entry) => entry.step) ?? [];
+  });
+  expect(timelineSteps).toContain("prepared");
+  expect(timelineSteps).toContain("ticket-add-clicked");
+  expect(timelineSteps).toContain("final-rsvp-clicked");
 });
 
 test("central reset clears this event and makes the device ready to activate again", async ({ page }) => {
@@ -346,6 +373,42 @@ test("central reset clears this event and makes the device ready to activate aga
   await expect(page.locator("#status")).toContainText("Reset this event");
 });
 
+test("managed live activation stops when the event tab is hidden", async ({ page }) => {
+  await installChromeMock(page, {
+    id: "hidden-tab-command",
+    runId: "hidden-tab-run",
+    type: "arm-live",
+    payload: {
+      runId: "hidden-tab-run",
+      eventUrl: "http://127.0.0.1:4173/event",
+      eventTitle: "Hidden Tab Test",
+      releaseAt: Date.now() + 60_000,
+      ticketStrategy: "first",
+      leaseId: "hidden-tab-lease",
+      execute: true
+    }
+  });
+  await page.goto("http://127.0.0.1:4173/event");
+  await page.setContent('<title>Hidden Tab Test</title><main><h1>Hidden Tab Test</h1><button id="open">RSVP</button></main>');
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  });
+  await page.addScriptTag({ path: path.resolve("extension/content.js") });
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __autobotControlReports: Array<{ phase: string }> })
+              .__autobotControlReports.map((report) => report.phase),
+        ),
+      { timeout: 5_000 },
+    )
+    .toContain("failed");
+  await expect(page.locator("#status")).toContainText("Keep this POSH event tab visible");
+});
+
 test("release click does not wait for controller reporting", async ({ page }) => {
   const releaseAt = Date.now() + 1_200;
   await installChromeMock(
@@ -372,8 +435,19 @@ test("release click does not wait for controller reporting", async ({ page }) =>
   );
   await page.evaluate(() => {
     Object.assign(window, { __firstReleaseClickAt: 0 });
-    document.querySelector("#open")?.addEventListener("click", () => {
-      (window as unknown as { __firstReleaseClickAt: number }).__firstReleaseClickAt = Date.now();
+    const root = document.querySelector("#root") as HTMLElement;
+    root.querySelector("#open")?.addEventListener("click", () => {
+      root.innerHTML = `
+        <h1>Fast Release Test</h1>
+        <section role="dialog">
+          <article data-sentry-component="EventPageTicketItem">
+            <h6>Fast Slot</h6><p>Free</p><button id="add">+</button>
+          </article>
+        </section>
+      `;
+      root.querySelector("#add")?.addEventListener("click", () => {
+        (window as unknown as { __firstReleaseClickAt: number }).__firstReleaseClickAt = Date.now();
+      });
     });
   });
   await page.addScriptTag({ path: path.resolve("extension/content.js") });

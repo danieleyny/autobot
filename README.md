@@ -8,7 +8,7 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.12.1 includes an optional multi-device Command Center for a variable
+AUTOBOT v0.12.2 includes an optional multi-device Command Center for a variable
 fleet of 1–20 laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
 password delivery, remote event-page opening, readiness checks, rehearsal,
@@ -18,9 +18,13 @@ and second displayed ticket slots, and records the target used by each laptop.
 This release also holds an unlocked event until the exact release time, avoids a
 release-time refresh, retries a replaced RSVP control once, and recognizes
 POSH's post-RSVP update-preference dialog as a confirmed reservation. The
-v0.12.1 fast-release path synchronizes each laptop to the controller clock,
+v0.12.2 prepared-release path synchronizes each laptop to the controller clock,
 removes hosted network and database waits from the exact release moment, reacts
-to page changes immediately, and adds a central reset-and-reactivate command.
+to page changes immediately, opens and verifies each assigned free-ticket
+selector before release, and adds a central reset-and-reactivate command. Page
+preparation is staggered across the fleet while the final release remains
+synchronized. A managed live run stops if its event tab is hidden, and each
+laptop keeps a local-only timing log that can be copied from its extension panel.
 Idle bridges now check in every 15 seconds and automatically return to
 one-second command polling whenever an event page or pending command is active.
 
@@ -51,10 +55,10 @@ Use these steps when adding a friend's computer to the hosted Command Center:
    before attempting a controlled live test.
 
 To upgrade an already paired laptop, run the setup assistant from the extracted
-v0.12.1 folder. It preserves the saved device identity and Command Center
+v0.12.2 folder. It preserves the saved device identity and Command Center
 pairing; do not remove or revoke the laptop first. Remove the old unpacked
 AUTOBOT extension in `chrome://extensions`, load the new package's `extension`
-folder, and restart the computer once so the startup bridge switches to v0.12.1.
+folder, and restart the computer once so the startup bridge switches to v0.12.2.
 
 For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
@@ -73,7 +77,7 @@ enrollment code works for the configured number of laptops for up to 48 hours;
 every enrolled laptop remains blocked until approved in the dashboard. POSH
 sign-in, OTP, and CAPTCHA/Cloudflare checks remain local and manual. The
 dashboard may deliver an event password encrypted separately for each selected
-device. Live fast-release activation requires the matching v0.12.1 bridge and
+device. Prepared live activation requires the matching v0.12.2 bridge and
 extension on every selected laptop.
 
 ## Install
@@ -156,8 +160,9 @@ that user logs in:
 npm run device:install
 ```
 
-This creates a user-level macOS LaunchAgent, Windows Startup entry, or Linux
-desktop autostart entry. It does not require administrator access. On managed
+This creates a self-restarting user-level macOS LaunchAgent, hidden Windows
+Startup watchdog, or Linux desktop autostart entry. It does not require
+administrator access. On managed
 school computers where startup entries are restricted, keep using `npm run
 device` or ask IT to approve the user-level startup entry. Remove it later with
 `npm run device:uninstall`.
@@ -169,7 +174,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.12.1. On a POSH event page,
+Reload the unpacked extension after installing v0.12.2. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -191,8 +196,15 @@ For a fleet test, enter the current event URL in the dashboard, use **Select
 online**, and click **Open event on selected devices**. Once the devices report
 the new page and title, use **Select ready**, clear any laptop that will not
 participate, enter the password and release time once, and resolve every
-readiness message. The number shown on the **Activate devices** button is the
+readiness message. Keep every selected event tab visible. The number shown on
+the **Prepare + activate devices** button is the
 exact number of one-use leases that will be issued.
+
+Managed live activation pre-opens the ticket selector and verifies the assigned
+free slot before waiting. It never changes ticket quantity during preparation.
+At release it revalidates the prepared card and starts locally without waiting
+for the controller. Preparation is staggered by up to 30 seconds to avoid a
+single fleet-wide page-loading burst.
 
 After a controlled test, select the participating laptops and use **Reset
 selected devices** to stop any remaining run, clear their local test locks, and
@@ -201,6 +213,9 @@ test tickets have been deleted or relisted. The dashboard overview summarizes
 the latest run as confirmed/passed, waiting or review, and issues. The **Fleet directory** tab stores optional POSH account
 email, phone, and a secondary description for each laptop. Those fields remain
 dashboard-only and are never sent to the device or used by the automation.
+Each laptop also keeps a local timing timeline containing step names and times,
+but no password, login, OTP, email, or phone data. Use **Copy local timing log**
+in that laptop's AUTOBOT panel when a slow run needs diagnosis.
 
 Pairings persist across restarts, so the computers can be connected the day
 before. Keep Chrome, the event tab, and the device bridge running near the test.

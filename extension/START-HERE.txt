@@ -1,11 +1,11 @@
-AUTOBOT RSVP LAB v0.12.1 - SCHOOL COMPUTER SETUP
+AUTOBOT RSVP LAB v0.12.2 - SCHOOL COMPUTER SETUP
 =================================================
 
 WHAT YOU NEED
 
 - Google Chrome
 - Permission to enable Chrome Developer mode
-- The extracted AUTOBOT-System-v0.12.1 folder
+- The extracted AUTOBOT-System-v0.12.2 folder
 
 
 INSTALL — ABOUT 2 MINUTES
@@ -31,7 +31,7 @@ INSTALL — ABOUT 2 MINUTES
 8. Confirm that "AUTOBOT Owned-Event RSVP Lab" appears and is enabled.
 
 9. Open your POSH event page and refresh it once.
-   The AUTOBOT panel should appear in the lower-right corner and show v0.12.1.
+   The AUTOBOT panel should appear in the lower-right corner and show v0.12.2.
 
 
 OPTIONAL COMMAND CENTER
@@ -52,6 +52,8 @@ OPTIONAL COMMAND CENTER
   independent, one-use execution lease, whether the test uses 1 or 20 laptops.
 - Reset selected devices in the Command Center clears those laptops for another
   activation after the organizer resets the mock tickets.
+- Prepare + activate opens and checks each assigned ticket selector before the
+  synchronized release without changing ticket quantity.
 - POSH login, OTP, and CAPTCHA checks remain local and manual.
 
 
@@ -74,6 +76,7 @@ BEFORE THE DEMONSTRATION
 7. Click "Run / Arm" at least two minutes before the release.
 
 8. Keep Chrome open, keep the event tab visible, and keep the computer awake.
+   A hidden event tab stops a managed live run instead of risking a delayed timer.
 
 
 IMPORTANT

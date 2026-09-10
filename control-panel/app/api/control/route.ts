@@ -104,7 +104,7 @@ function supportsFleetExecution(version: string): boolean {
 }
 
 function supportsFastRelease(version: string): boolean {
-  return versionAtLeast(version, [0, 12, 1]);
+  return versionAtLeast(version, [0, 12, 2]);
 }
 
 function optionalText(value: unknown, label: string, maxLength: number): string | null {
@@ -548,6 +548,9 @@ export async function POST(request: NextRequest) {
         if (deviceStates.some((device) => device.state.controlConnected !== true)) {
           throw new Error("Every selected device must have command-center control enabled locally.");
         }
+        if (run.mode === "live" && deviceStates.some((device) => device.state.pageVisible !== true)) {
+          throw new Error("Keep the configured POSH event tab visible on every selected device before arming.");
+        }
         if (deviceStates.some((device) => !sameEventPage(device.state.eventUrl, run.event_url))) {
           throw new Error("Every selected device must have the configured event page open before arming.");
         }
@@ -555,7 +558,7 @@ export async function POST(request: NextRequest) {
           throw new Error("Every selected device must show the configured event title before arming.");
         }
         if (run.mode === "live" && deviceStates.some((device) => !supportsFastRelease(device.version))) {
-          throw new Error("Every selected device must run AUTOBOT v0.12.1 or newer for the fast-release live test.");
+          throw new Error("Every selected device must run AUTOBOT v0.12.2 or newer for prepared live activation.");
         }
 
         const encryptedSecrets =
@@ -643,9 +646,18 @@ export async function POST(request: NextRequest) {
               index < firstSlotCount ? "first" : "second",
             ] as const),
           );
-          const statements = selectedIds.flatMap((deviceId) => {
+          const preparationSpreadMs = Math.max(
+            0,
+            Math.min(30_000, Number(run.release_at) - timestamp - 20_000),
+          );
+          const statements = selectedIds.flatMap((deviceId, deviceIndex) => {
             const leaseId = crypto.randomUUID();
             const assignedTicketStrategy = assignments.get(deviceId) ?? "first";
+            const prepareAt = timestamp + (
+              selectedIds.length > 1
+                ? Math.round((preparationSpreadMs * deviceIndex) / (selectedIds.length - 1))
+                : 0
+            );
             return [
               db.prepare(
                 `INSERT INTO leases (id, owner_id, run_id, device_id, status, created_at)
@@ -669,6 +681,7 @@ export async function POST(request: NextRequest) {
                 runId,
                 JSON.stringify({
                 ...payload,
+                prepareAt,
                 ticketStrategy: assignedTicketStrategy,
                 execute: true,
                 leaseId,
@@ -695,6 +708,10 @@ export async function POST(request: NextRequest) {
             devices: selectedIds.length,
             reservationTarget: run.mode === "live" ? selectedIds.length : 0,
             passwordDelivered: passwordIncluded,
+            preparationSpreadMs:
+              run.mode === "live"
+                ? Math.max(0, Math.min(30_000, Number(run.release_at) - timestamp - 20_000))
+                : 0,
             ...(run.mode === "live"
               ? {
                   firstSlotDevices: Number.isInteger(Number(body.firstSlotCount))

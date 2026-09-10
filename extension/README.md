@@ -7,9 +7,9 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.12.1
+## Optional Command Center in v0.12.2
 
-The normal panel remains fully standalone. If the local v0.12.1 device bridge is
+The normal panel remains fully standalone. If the local v0.12.2 device bridge is
 running, the bottom of the panel shows the paired device name and a green
 connection indicator. **Allow command center** controls whether that device may
 accept central inspection, live-fleet, stop, and reset commands.
@@ -62,9 +62,16 @@ Posh clears failed password entries. Attempts never overlap: if Posh has not
 finished the previous response, missed clock targets are skipped. The page does
 not refresh, and the helper stops as soon as the event opens. Password
 acceptance prepares the page; if the gate opens early, the helper holds the
-unlocked page until the synchronized release time before starting the RSVP
+unlocked ticket selector until the synchronized release time before starting the RSVP
 sequence. The password remains only in
 the current page's memory, so keep the tab open.
+
+For managed live runs, the helper focuses the event tab, opens the ticket
+selector, verifies the assigned free slot, and checks the local one-shot lock
+before release. It does not change ticket quantity during this preparation.
+The prepared card is revalidated at release and rescanned if POSH replaced it.
+Hiding the event tab stops the managed run so Chrome background throttling
+cannot silently delay the local clock.
 
 If the release-gate option is unchecked, the helper unlocks and validates the
 event first, waits without refreshing, selects exactly one matching free ticket,
@@ -74,6 +81,10 @@ The Command Center's **Reset selected devices** command stops the active run,
 clears this event's local one-shot locks on each selected laptop, and restores
 the local Run / Arm button. Use it only after the organizer-owned test tickets
 have been deleted or relisted.
+
+**Copy local timing log** copies a device-only JSON timeline for diagnosing a
+slow run. The timeline is never sent to the Command Center and contains no
+password, login, OTP, email, or phone data.
 
 Event-title comparison ignores capitalization and repeated whitespace while
 still requiring a full-name match. The event title is auto-detected from the

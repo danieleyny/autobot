@@ -1,5 +1,5 @@
 const BRIDGE_URL = "http://127.0.0.1:4181";
-const BRIDGE_VERSION = "0.12.1";
+const BRIDGE_VERSION = "0.12.2";
 const LAST_EVENT_KEY = "autobot:last-event-url";
 const NAVIGATION_ALARM = "autobot-navigation-poll";
 let navigationPolling = false;
@@ -77,6 +77,21 @@ async function pollNavigation() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.url?.startsWith("https://posh.vip/e/")) return false;
+  if (message?.type === "autobot:focus-event-tab") {
+    const tabId = sender.tab?.id;
+    const windowId = sender.tab?.windowId;
+    if (typeof tabId !== "number") {
+      sendResponse({ ok: false });
+      return false;
+    }
+    Promise.all([
+      chrome.tabs.update(tabId, { active: true }),
+      typeof windowId === "number" ? chrome.windows.update(windowId, { focused: true }) : Promise.resolve(),
+    ])
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message?.type === "autobot:control-poll") {
     bridgePost("/extension/poll", { status: message.status })
       .then(sendResponse)

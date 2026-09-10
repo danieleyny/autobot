@@ -2,8 +2,9 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.12.1";
+  const VERSION = "0.12.2";
   const STATE_KEY = `autobot:${location.pathname}`;
+  const TIMELINE_KEY = `autobot-timeline:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
     /already (?:have|registered|rsvp|reserved)|already going|limit reached|ticket limit|maximum number of tickets/i;
@@ -58,7 +59,7 @@
         cursor: pointer;
       }
       button.secondary { color: #eef0f3; background: #343842; }
-      #reset-lock { flex-basis: 100%; }
+      #reset-lock, #copy-timeline { flex-basis: 100%; }
       button:disabled { opacity: .5; cursor: not-allowed; }
       .status {
         min-height: 38px; max-height: 110px; overflow: auto; margin-top: 12px;
@@ -77,7 +78,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.12.1</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.12.2</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -110,6 +111,7 @@
         <button id="arm">Run / Arm</button>
         <button id="disarm" class="secondary">Stop</button>
         <button id="reset-lock" class="secondary">Reset this event's test locks</button>
+        <button id="copy-timeline" class="secondary">Copy local timing log</button>
       </div>
       <div id="status" class="status" role="status">Ready. Authenticate with POSH normally before executing.</div>
       <div class="control-state">
@@ -131,6 +133,7 @@
   const armButton = $("#arm");
   const disarmButton = $("#disarm");
   const resetLockButton = $("#reset-lock");
+  const copyTimelineButton = $("#copy-timeline");
   const allowControl = $("#allow-control");
   const controlStatus = $("#control-status");
   const controlDot = $("#control-dot");
@@ -141,11 +144,43 @@
   let handledControlCommandId = null;
   let controllerClockOffsetMs = 0;
   let controllerClockRoundTripMs = null;
+  let preparedTicketCard = null;
+  let preparedTicketName = "";
+  let performanceTimeline = [];
 
   function log(message) {
     const time = new Date().toLocaleTimeString();
     latestLogMessage = message;
     status.textContent = `[${time}] ${message}\n${status.textContent}`.slice(0, 3000);
+  }
+
+  function traceStep(step, detail = {}) {
+    const localAt = Date.now();
+    const releaseAt = Number(activeControlCommand?.payload?.releaseAt);
+    const entry = {
+      step,
+      localAt,
+      synchronizedAt: synchronizedNow(),
+      ...(Number.isFinite(releaseAt) ? { fromReleaseMs: synchronizedNow() - releaseAt } : {}),
+      ...detail
+    };
+    performanceTimeline = [...performanceTimeline.slice(-39), entry];
+    chrome.storage.local.set({
+      [TIMELINE_KEY]: {
+        version: VERSION,
+        eventPath: location.pathname,
+        updatedAt: new Date(localAt).toISOString(),
+        entries: performanceTimeline
+      }
+    }).catch(() => {});
+  }
+
+  function resetPerformanceTimeline(command) {
+    performanceTimeline = [];
+    traceStep("command-received", {
+      commandType: command?.type || "local",
+      ticketStrategy: command?.payload?.ticketStrategy || $("#ticket-selection").value
+    });
   }
 
   function normalize(value) {
@@ -171,6 +206,8 @@
       extensionVersion: VERSION,
       controlEnabled: Boolean(allowControl.checked),
       pageReady: Boolean(normalize(document.title)),
+      pageVisible: document.visibilityState === "visible",
+      windowFocused: document.hasFocus(),
       eventUrl: location.href,
       eventTitle:
         normalize($("#event-title").value) ||
@@ -178,6 +215,8 @@
         normalize(document.title),
       armed: Boolean(armButton.disabled),
       executing: Boolean(activeControlCommand?.executionStarted),
+      prepared: Boolean(activeControlCommand?.prepared),
+      preparedTicketName: activeControlCommand?.preparedTicketName || null,
       commandId: activeControlCommand?.id || null,
       runId: activeControlCommand?.runId || null,
       latestMessage: latestLogMessage,
@@ -192,6 +231,14 @@
       return await chrome.runtime.sendMessage(message);
     } catch {
       return null;
+    }
+  }
+
+  async function ensureForegroundEventTab() {
+    await bridgeMessage({ type: "autobot:focus-event-tab" });
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    if (document.visibilityState !== "visible") {
+      throw new Error("Keep this POSH event tab visible before fleet activation.");
     }
   }
 
@@ -280,6 +327,8 @@
     }
     if (command.type === "reset") {
       activeControlCommand = null;
+      preparedTicketCard = null;
+      preparedTicketName = "";
       await resetEventLocks(false);
       await controlReport(command, "reset-complete");
       return;
@@ -299,6 +348,8 @@
     }
 
     activeControlCommand = command;
+    resetPerformanceTimeline(command);
+    await ensureForegroundEventTab();
     applyControlConfiguration(command);
     log(`Command center: ${command.type === "inspect" ? "inspection" : "live fleet"} command accepted.`);
     void controlReport(command, "accepted").catch(() => {});
@@ -635,6 +686,88 @@
     );
   }
 
+  async function resolveTicketForStrategy(config, timeoutMs = 8_000) {
+    let selectionMessage = "";
+    const cards = await waitFor(
+      () => {
+        const available = availableFreeTicketCards(config.excludedTicketNames || []);
+        if (config.ticketStrategy === "any" && available.length >= 1) {
+          selectionMessage = "Selected the first currently available free RSVP.";
+          return [available[0]];
+        }
+        if (config.ticketStrategy === "first" && available.length >= 1) {
+          selectionMessage = "Selected the first available free RSVP by displayed order.";
+          return [available[0]];
+        }
+        if (config.ticketStrategy === "second" && available.length >= 2) {
+          selectionMessage = "Selected the second available free RSVP by displayed order.";
+          return [available[1]];
+        }
+        if (config.ticketStrategy === "second" && available.length === 1) {
+          selectionMessage = "Only one free RSVP is available; selected that sole option.";
+          return [available[0]];
+        }
+
+        // Compatibility for an armed state saved by v0.4.x before an extension
+        // reload. New runs use ticketStrategy and do not depend on the name.
+        if (!config.ticketStrategy && config.ticketName) {
+          const matches = findTicketCard(config.ticketName);
+          if (matches.length === 1) {
+            selectionMessage = `Selected legacy exact-name match: ${config.ticketName}.`;
+            return matches;
+          }
+          if (available.length === 1) {
+            selectionMessage = "Legacy name did not match; selected the sole available free RSVP.";
+            return [available[0]];
+          }
+        }
+        return null;
+      },
+      timeoutMs,
+      "an available free RSVP for the selected strategy"
+    );
+    if (cards.length !== 1) throw new Error(`Expected one matching ticket card, found ${cards.length}.`);
+    const card = cards[0];
+    const ticketName = cardTicketName(card);
+    if (!ticketName) throw new Error("The selected ticket card has no visible name.");
+    const cardText = normalize(card.innerText);
+    if (!/\bFree\b|\bRSVP\b|\$0(?:\.00)?\b/i.test(cardText)) {
+      throw new Error("Safety stop: the target ticket is not visibly marked Free, RSVP, or $0.");
+    }
+    return { card, ticketName, selectionMessage };
+  }
+
+  async function prepareTicketSelector(config) {
+    await openTicketPicker();
+    const resolved = await resolveTicketForStrategy(config);
+    const completed = (await chrome.storage.local.get(completionKey(resolved.ticketName)))[
+      completionKey(resolved.ticketName)
+    ];
+    if (completed) {
+      throw new Error(
+        `One-shot lock: this browser already submitted ${resolved.ticketName} on ${new Date(completed.at).toLocaleString()}.`
+      );
+    }
+    preparedTicketCard = resolved.card;
+    preparedTicketName = resolved.ticketName;
+    config.preparedTicketName = resolved.ticketName;
+    config.completionLockCheckedFor = resolved.ticketName;
+    config.preparedAt = synchronizedNow();
+    if (activeControlCommand) {
+      activeControlCommand.prepared = true;
+      activeControlCommand.preparedTicketName = resolved.ticketName;
+      void controlReport(activeControlCommand, "prepared", {
+        ticketName: resolved.ticketName,
+        ticketStrategy: config.ticketStrategy
+      }).catch(() => {});
+    }
+    traceStep("prepared", {
+      ticketName: resolved.ticketName,
+      ticketStrategy: config.ticketStrategy
+    });
+    log(`Prepared ${resolved.ticketName}. The selector will stay open until release.`);
+  }
+
   function visibleSoldOutEvidence() {
     const matches = [...document.querySelectorAll("body *")].filter(
       (element) =>
@@ -817,71 +950,36 @@
       config.controlExecutionStarted = true;
       activeControlCommand.executionStarted = true;
       void saveState(config).catch(() => {});
+      traceStep("release-started", { ticketStrategy: config.ticketStrategy });
       log("Local release clock started the authorized RSVP sequence.");
     }
     await openTicketPicker();
 
-    let selectionMessage = "";
-    const cards = await waitFor(
-      () => {
-        const available = availableFreeTicketCards(config.excludedTicketNames || []);
-        if (config.ticketStrategy === "any" && available.length >= 1) {
-          selectionMessage = "Selected the first currently available free RSVP.";
-          return [available[0]];
+    const preparedCardIsUsable =
+      preparedTicketCard?.isConnected &&
+      preparedTicketName &&
+      !(config.excludedTicketNames || []).some((name) => sameText(name, preparedTicketName)) &&
+      availableFreeTicketCards(config.excludedTicketNames || []).includes(preparedTicketCard);
+    const resolved = preparedCardIsUsable
+      ? {
+          card: preparedTicketCard,
+          ticketName: preparedTicketName,
+          selectionMessage: "Used the preflight-prepared free RSVP."
         }
-        if (config.ticketStrategy === "first" && available.length >= 1) {
-          selectionMessage = "Selected the first available free RSVP by displayed order.";
-          return [available[0]];
-        }
-        if (config.ticketStrategy === "second" && available.length >= 2) {
-          selectionMessage = "Selected the second available free RSVP by displayed order.";
-          return [available[1]];
-        }
-        if (config.ticketStrategy === "second" && available.length === 1) {
-          selectionMessage = "Only one free RSVP is available; selected that sole option.";
-          return [available[0]];
-        }
-
-        // Compatibility for an armed state saved by v0.4.x before an extension
-        // reload. New runs use ticketStrategy and do not depend on the name.
-        if (!config.ticketStrategy && config.ticketName) {
-          const matches = findTicketCard(config.ticketName);
-          if (matches.length === 1) {
-            selectionMessage = `Selected legacy exact-name match: ${config.ticketName}.`;
-            return matches;
-          }
-          if (available.length === 1) {
-            selectionMessage = "Legacy name did not match; selected the sole available free RSVP.";
-            return [available[0]];
-          }
-        }
-        return null;
-      },
-      8_000,
-      "an available free RSVP for the selected strategy"
-    );
-    if (cards.length !== 1) throw new Error(`Expected one matching ticket card, found ${cards.length}.`);
-
-    const card = cards[0];
-    const resolvedTicketName = normalize(card.querySelector("h6")?.innerText);
-    if (!resolvedTicketName) throw new Error("The selected ticket card has no visible name.");
-    log(`${selectionMessage} Resolved ticket: ${resolvedTicketName}.`);
+      : await resolveTicketForStrategy(config);
+    const card = resolved.card;
+    const resolvedTicketName = resolved.ticketName;
+    log(`${resolved.selectionMessage} Resolved ticket: ${resolvedTicketName}.`);
     const resolvedCompletionKey = completionKey(resolvedTicketName);
-    const resolvedCompletion =
-      (await chrome.storage.local.get(resolvedCompletionKey))[resolvedCompletionKey];
+    const resolvedCompletion = sameText(config.completionLockCheckedFor, resolvedTicketName)
+      ? null
+      : (await chrome.storage.local.get(resolvedCompletionKey))[resolvedCompletionKey];
     if (resolvedCompletion) {
       throw new Error(
         `One-shot lock: this browser already submitted ${resolvedTicketName} on ${new Date(resolvedCompletion.at).toLocaleString()}.`
       );
     }
     config.ticketName = resolvedTicketName;
-    // innerText preserves the visual separation between the ticket name and
-    // price. textContent can collapse POSH's adjacent elements into
-    // "10 am ticketFree", which defeats word-boundary safety checks.
-    const cardText = normalize(card.innerText);
-    if (!/\bFree\b|\bRSVP\b|\$0(?:\.00)?\b/i.test(cardText)) {
-      throw new Error("Safety stop: the target ticket is not visibly marked Free, RSVP, or $0.");
-    }
     log(`Verified free ticket: ${resolvedTicketName}.`);
 
     if (!config.execute) {
@@ -914,6 +1012,7 @@
     void saveState(config).catch(() => {});
 
     addButtons[0].click();
+    traceStep("ticket-add-clicked", { ticketName: resolvedTicketName });
     await waitFor(() => {
       const selectedCards = findTicketCard(resolvedTicketName);
       if (selectedCards.length !== 1) return false;
@@ -931,6 +1030,7 @@
     if (checkout.length !== 1) throw new Error(`Expected one Checkout button, found ${checkout.length}.`);
     rememberVisibleSoldOutEvidence(config);
     checkout[0].click();
+    traceStep("checkout-clicked", { ticketName: resolvedTicketName });
     log("One ticket selected; checkout requested.");
 
     const outcome = await waitFor(() => {
@@ -980,6 +1080,7 @@
     log(`Verified final order summary: ${resolvedTicketName}.`);
     rememberVisibleSoldOutEvidence(config);
     outcome.click();
+    traceStep("final-rsvp-clicked", { ticketName: resolvedTicketName });
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
     if (config.controlCommandId && activeControlCommand?.id === config.controlCommandId) {
       void controlReport(activeControlCommand, "submitted", { ticketName: resolvedTicketName }).catch(() => {});
@@ -1017,6 +1118,7 @@
   function configFromPanel() {
     const releaseValue = $("#release-at").value;
     const commandedReleaseAt = Number(activeControlCommand?.payload?.releaseAt);
+    const commandedPrepareAt = Number(activeControlCommand?.payload?.prepareAt);
     const releaseAt = Number.isFinite(commandedReleaseAt)
       ? commandedReleaseAt
       : releaseValue
@@ -1032,6 +1134,7 @@
       ticketName: "",
       eventPassword: $("#event-password").value,
       releaseAt,
+      prepareAt: Number.isFinite(commandedPrepareAt) ? commandedPrepareAt : synchronizedNow(),
       releaseConfigured: Boolean(releaseValue),
       retryGate: $("#release-gate").checked,
       execute: $("#execute").checked,
@@ -1060,6 +1163,7 @@
   }
 
   async function markCompleted(config, result) {
+    traceStep("run-finished", { ticketName: config.ticketName, result });
     await chrome.storage.local.set({
       [completionKey(config.ticketName)]: {
         at: new Date().toISOString(),
@@ -1092,10 +1196,10 @@
     await executeReservation(config);
   }
 
-  async function waitUntil(timestamp) {
+  async function waitUntil(timestamp, label = "Armed") {
     while (!stopped && synchronizedNow() < timestamp) {
       const remaining = timestamp - synchronizedNow();
-      armButton.textContent = `Armed · ${Math.max(0, Math.ceil(remaining / 1000))}s`;
+      armButton.textContent = `${label} · ${Math.max(0, Math.ceil(remaining / 1000))}s`;
       const delay = remaining > 2_000 ? 250 : remaining > 250 ? 25 : 5;
       await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
     }
@@ -1134,9 +1238,12 @@
           eventPassword: "",
           gateRetrying: false
         };
+        await waitForEventHeading(safeState);
+        assertEvent(safeState);
+        await prepareTicketSelector(safeState);
         await saveState(safeState);
         if (synchronizedNow() < config.releaseAt) {
-          log("Gate opened early; holding the prepared page until the exact release time.");
+          log("Gate opened early; holding the prepared ticket selector until the exact release time.");
           await waitUntil(config.releaseAt);
         }
         log("Release time reached; starting the RSVP sequence without refreshing.");
@@ -1171,6 +1278,15 @@
       if (!config.eventTitle || !config.ticketStrategy) {
         throw new Error("Event title and ticket-selection strategy are required.");
       }
+      const centrallyManagedLive = command?.type === "arm-live" && config.execute;
+      if (
+        centrallyManagedLive &&
+        config.prepareAt > synchronizedNow() &&
+        config.prepareAt < config.releaseAt
+      ) {
+        await waitUntil(config.prepareAt, "Preparing");
+      }
+      if (centrallyManagedLive) await ensureForegroundEventTab();
       const gateVisible = Boolean(passwordGate());
       const timedGateMode =
         gateVisible &&
@@ -1179,6 +1295,22 @@
         config.releaseAt > synchronizedNow() - GATE_LATE_MS;
 
       if (timedGateMode) {
+        const enoughTimeForEarlyAttempt = config.releaseAt - synchronizedNow() > 15_000;
+        if (centrallyManagedLive && config.eventPassword && enoughTimeForEarlyAttempt) {
+          const unlockedEarly = await tryEventPassword(config);
+          if (unlockedEarly) {
+            $("#event-password").value = "";
+            log("Event password accepted during preflight; password cleared from the helper.");
+            const safeState = { ...config, eventPassword: "", gateRetrying: false };
+            await waitForEventHeading(safeState);
+            assertEvent(safeState);
+            await prepareTicketSelector(safeState);
+            await saveState(safeState);
+            await schedule(safeState);
+            return;
+          }
+          log("The password is not active yet. The bounded release-gate schedule will keep trying.");
+        }
         await saveState({
           ...config,
           eventPassword: "",
@@ -1192,6 +1324,7 @@
       await waitForEventHeading(config);
       assertEvent(config);
       const safeState = { ...config, eventPassword: "", gateRetrying: false };
+      if (centrallyManagedLive) await prepareTicketSelector(safeState);
       await saveState(safeState);
       await schedule(safeState);
     } catch (error) {
@@ -1202,6 +1335,8 @@
   async function disarm() {
     stopped = true;
     clearInterval(countdownTimer);
+    preparedTicketCard = null;
+    preparedTicketName = "";
     await clearState();
     armButton.disabled = false;
     armButton.textContent = "Run / Arm";
@@ -1225,6 +1360,8 @@
 
     stopped = true;
     clearInterval(countdownTimer);
+    preparedTicketCard = null;
+    preparedTicketName = "";
     await clearState();
     if (matchingKeys.length) await chrome.storage.local.remove(matchingKeys);
     armButton.disabled = false;
@@ -1238,6 +1375,10 @@
 
   function fail(error) {
     const message = error instanceof Error ? error.message : String(error);
+    stopped = true;
+    preparedTicketCard = null;
+    preparedTicketName = "";
+    traceStep("run-stopped", { message });
     log(`STOPPED: ${message}`);
     if (activeControlCommand) {
       const command = activeControlCommand;
@@ -1261,6 +1402,30 @@
   });
   resetLockButton.addEventListener("click", () => {
     resetEventLocks().catch(fail);
+  });
+  copyTimelineButton.addEventListener("click", async () => {
+    try {
+      const stored = await chrome.storage.local.get(TIMELINE_KEY);
+      const timeline = stored[TIMELINE_KEY] || {
+        version: VERSION,
+        eventPath: location.pathname,
+        entries: performanceTimeline
+      };
+      await navigator.clipboard.writeText(JSON.stringify(timeline, null, 2));
+      log("Copied the local timing log. It was not sent to the Command Center.");
+    } catch {
+      log("The browser could not copy the timing log. Keep this tab active and try again.");
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (
+      document.visibilityState !== "visible" &&
+      activeControlCommand?.type === "arm-live" &&
+      armButton.disabled
+    ) {
+      fail(new Error("The event tab became hidden. Keep it visible and activate the fleet again."));
+    }
   });
 
   allowControl.addEventListener("change", () => {

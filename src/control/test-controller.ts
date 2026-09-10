@@ -81,7 +81,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.12.1-test",
+    version: "0.12.2-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -92,12 +92,17 @@ async function claimDevice(code: string, name: string) {
   };
 }
 
-async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Classroom Test Drop") {
+async function poll(
+  token: string,
+  keys: DeviceKeyPair,
+  eventTitle = "AUTOBOT Classroom Test Drop",
+  statusOverrides: Record<string, unknown> = {},
+) {
   return jsonRequest(
     "/api/device",
     {
       action: "poll",
-      version: "0.12.1-test",
+      version: "0.12.2-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -105,9 +110,12 @@ async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Cl
         controlConnected: true,
         controlEnabled: true,
         pageReady: true,
+        pageVisible: true,
+        windowFocused: true,
         eventUrl: "https://posh.vip/e/test-release",
         eventTitle,
         pollIntervalMs: 15_000,
+        ...statusOverrides,
       },
     },
     { token },
@@ -173,7 +181,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.12.1-test",
+      version: "0.12.2-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },
@@ -205,7 +213,7 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
-  assert.equal(directoryState.controllerRevision, "0.12.1");
+  assert.equal(directoryState.controllerRevision, "0.12.2");
   const firstSeenAt = Number(directoryDevice?.lastSeenAt);
   await poll(executorOne.token, executorOne.keys, eventTitle);
   const duplicateState = await jsonRequest("/api/control", null, { cookie });
@@ -257,6 +265,24 @@ try {
   );
   const runId = String(created.id);
   const eventPassword = `fleet-${crypto.randomUUID().slice(0, 8)}`;
+  await poll(executorOne.token, executorOne.keys, eventTitle, { pageVisible: false });
+  const hiddenTabResult = await jsonRequest(
+    "/api/control",
+    {
+      action: "arm-run",
+      runId,
+      deviceIds: [executorOne.id, executorTwo.id],
+      confirmEventTitle: eventTitle,
+      firstSlotCount: 1,
+      encryptedSecrets: {
+        [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
+        [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
+      },
+    },
+    { cookie, expectedStatus: 400 },
+  );
+  assert.match(String(hiddenTabResult.error), /visible/i);
+  await poll(executorOne.token, executorOne.keys, eventTitle, { pageVisible: true });
   await jsonRequest(
     "/api/control",
     {
@@ -298,6 +324,8 @@ try {
     eventPassword,
   );
   assert.equal(executorOnePayload.releaseAt, executorTwoPayload.releaseAt);
+  assert.ok(Number(executorOnePayload.prepareAt) <= Number(executorTwoPayload.prepareAt));
+  assert.ok(Number(executorTwoPayload.prepareAt) < Number(executorTwoPayload.releaseAt));
   assert.equal(executorOnePayload.fleetSize, 2);
   assert.equal(executorOnePayload.ticketStrategy, "first");
   assert.equal(executorTwoPayload.ticketStrategy, "second");

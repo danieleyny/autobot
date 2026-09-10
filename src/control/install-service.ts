@@ -66,22 +66,33 @@ async function installMac() {
 async function installWindows() {
   const appData = process.env.APPDATA;
   if (!appData) throw new Error("Windows APPDATA directory is unavailable.");
-  const target = path.join(
+  const startupDirectory = path.join(
     appData,
     "Microsoft",
     "Windows",
     "Start Menu",
     "Programs",
     "Startup",
-    "AUTOBOT-Device.cmd",
   );
+  const target = path.join(startupDirectory, "AUTOBOT-Device.vbs");
+  const legacyTarget = path.join(startupDirectory, "AUTOBOT-Device.cmd");
+  const supportDirectory = path.join(process.env.LOCALAPPDATA ?? appData, "AUTOBOT");
+  const watchdog = path.join(supportDirectory, "AUTOBOT-Device-Watchdog.cmd");
   if (remove) {
-    await rm(target, { force: true });
+    await Promise.all([
+      rm(target, { force: true }),
+      rm(legacyTarget, { force: true }),
+      rm(watchdog, { force: true }),
+    ]);
     return target;
   }
-  await mkdir(path.dirname(target), { recursive: true });
-  const script = `@echo off\r\nstart "AUTOBOT Device" /min "${nodeExecutable}" "${tsxCli}" "${agentScript}" --config="${deviceConfig}"\r\n`;
-  await writeFile(target, script, "utf8");
+  await mkdir(startupDirectory, { recursive: true });
+  await mkdir(supportDirectory, { recursive: true });
+  await rm(legacyTarget, { force: true });
+  const script = `@echo off\r\nsetlocal\r\ntitle AUTOBOT Device Bridge\r\n:autobot_restart\r\n"${nodeExecutable}" "${tsxCli}" "${agentScript}" --config="${deviceConfig}"\r\ntimeout /t 5 /nobreak >nul\r\ngoto autobot_restart\r\n`;
+  const launcher = `Set shell = CreateObject("WScript.Shell")\r\nshell.Run "cmd.exe /d /c " & Chr(34) & "${watchdog.replaceAll('"', '""')}" & Chr(34), 0, False\r\n`;
+  await writeFile(watchdog, script, "utf8");
+  await writeFile(target, launcher, "utf8");
   return target;
 }
 

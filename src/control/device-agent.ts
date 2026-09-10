@@ -10,7 +10,7 @@ type ControllerCommand = {
   payload: Record<string, unknown>;
 };
 
-const VERSION = "0.12.1";
+const VERSION = "0.12.2";
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 const IDLE_POLL_INTERVAL_MS = 15_000;
 const CLOCK_SAMPLE_LIMIT = 8;
@@ -267,6 +267,7 @@ app.post("/extension/report", async (request, response) => {
       pendingCommand?.id === commandId &&
       [
         "accepted",
+        "prepared",
         "standby",
         "stopped",
         "failed",

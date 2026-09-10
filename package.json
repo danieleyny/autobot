@@ -1,6 +1,6 @@
 {
   "name": "autobot-command-center",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "private": true,
   "description": "A one-shot Playwright RSVP automation lab for an organizer-owned test event.",
   "type": "module",

@@ -1,4 +1,4 @@
-AUTOBOT v0.12.1 - SECOND COMPUTER QUICK START
+AUTOBOT v0.12.2 - SECOND COMPUTER QUICK START
 ==============================================
 
 WHAT YOU NEED
@@ -45,7 +45,7 @@ automatic startup, and starts the device bridge.
 
 UPGRADING AN ALREADY CONNECTED LAPTOP
 -------------------------------------
-Run the new setup file from the extracted v0.12.1 folder. It keeps the saved
+Run the new setup file from the extracted v0.12.2 folder. It keeps the saved
 pairing and updates the startup path without asking for another code. Remove the
 old unpacked AUTOBOT extension in chrome://extensions, load the new extension
 folder, then restart the computer once. Do not remove or revoke the laptop in
@@ -79,7 +79,7 @@ Run:
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.12.1 appears.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.12.2 appears.
 
 
 6. PAIR THE COMPUTER
@@ -114,6 +114,8 @@ Keep this terminal open during the test.
   Each selected laptop receives one independent, one-use execution lease.
 - After the organizer resets the mock tickets, use Reset selected devices in
   the Command Center to clear those laptops and activate them again.
+- For live mode, keep the POSH event tab visible. Prepare + activate opens and
+  verifies the assigned ticket selector early without changing quantity.
 
 
 OPTIONAL AUTO-START
@@ -132,7 +134,8 @@ IMPORTANT
 - A password entered in the Command Center is encrypted separately for this
   device and decrypted only by its local bridge.
 - Every computer can still operate independently using its local AUTOBOT panel.
-- Pairing remains saved across restarts. Keep Chrome, the event tab, and the
-  device bridge running near the test time.
+- Pairing remains saved across restarts. The installed Mac and Windows startup
+  service restarts the bridge if it exits. Keep Chrome and the event tab visible
+  near the test time.
 - Before returning a borrowed computer, ask the owner to click Remove and
   revoke, remove the extension, and delete the extracted AUTOBOT folder.
