@@ -86,7 +86,7 @@ function versionAtLeast(version: string, required: [number, number, number]) {
 }
 
 function supportsFastRelease(version: string) {
-  return versionAtLeast(version, [0, 12, 1]);
+  return versionAtLeast(version, [0, 12, 2]);
 }
 
 function sameEventPage(left: unknown, right: string) {
@@ -104,9 +104,10 @@ function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
   if (device.approvalStatus !== "approved") return "Waiting for approval";
   if (!device.online) return "Offline";
   if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
-  if (!supportsFastRelease(device.version)) return "Update to v0.12.1";
+  if (!supportsFastRelease(device.version)) return "Update to v0.12.2";
   if (!device.encryptionReady) return "Password security not ready";
   if (device.state.pageReady !== true) return "Open the event page";
+  if (device.state.pageVisible !== true) return "Bring the event tab to the front";
   if (!sameEventPage(device.state.eventUrl, eventUrl)) return "Wrong event page";
   if (
     typeof device.state.eventTitle !== "string" ||
@@ -148,7 +149,9 @@ function deviceSummary(device: Device) {
   if (device.approvalStatus !== "approved") return "Approval needed";
   const pageReady = device.state.pageReady === true;
   const armed = device.state.armed === true;
+  const prepared = device.state.prepared === true;
   if (!device.online) return "Offline";
+  if (prepared) return "Prepared";
   if (armed) return "Armed";
   if (pageReady) return "Event ready";
   return "Bridge online";
@@ -256,6 +259,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const firstSlotDevices = selectedDevices.slice(0, firstSlotCount);
   const secondSlotDevices = selectedDevices.slice(firstSlotCount);
   const readySelectedDevices = selectedDevices.filter((device) => !readinessIssue(device, eventUrl, eventTitle));
+  const preparedSelectedDevices = selectedDevices.filter((device) => device.state.prepared === true);
   const latestRunDevices = latestRun
     ? state.runDevices.filter((device) => device.run_id === latestRun.id)
     : [];
@@ -524,11 +528,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         encryptedSecrets,
         ...(mode === "live" ? { firstSlotCount } : {}),
       });
-      setEventPassword("");
       setNotice(
         mode === "inspection"
           ? `Rehearsal sent to ${selected.length} device${selected.length === 1 ? "" : "s"}. No RSVP controls will be clicked.`
-          : `Fleet activated: ${firstSlotCount} targeting slot 1 and ${secondSlotCount} targeting slot 2.`,
+          : `Fleet preparation started: ${firstSlotCount} targeting slot 1 and ${secondSlotCount} targeting slot 2. Each laptop will open and hold its assigned ticket selector before the synchronized release.`,
       );
       await refresh();
     } catch (error) {
@@ -570,7 +573,6 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     try {
       const result = await post({ action: "reset-devices", deviceIds: selected });
       const count = Number(result.devices ?? selected.length);
-      setEventPassword("");
       setNotice(
         `Reset sent to ${count} device${count === 1 ? "" : "s"}. ` +
           "Keep Chrome and the event page open; each device will be ready for another activation.",
@@ -689,7 +691,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       {outdatedDevices.length > 0 ? (
         <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
-        <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.12.1 fast-release update before the next live activation.</span>
+        <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.12.2 prepared-release update before the next live activation.</span>
             <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download current release</a>
           </div>
         </div>
@@ -1019,15 +1021,15 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   <p className="text-sm font-semibold">Fleet preflight: {readySelectedDevices.length}/{selected.length} ready</p>
                   <p className="mt-1 text-xs leading-5 text-[#6b746c]">
                     {readySelectedDevices.length === selected.length
-                      ? "Every selected device is online, updated, controller-enabled, password-ready, and on the configured event page."
-                      : "Open the event page and resolve the readiness message shown on each selected device card before activation."}
+                      ? `${preparedSelectedDevices.length}/${selected.length} already prepared. Activation will stagger page preparation, hold the ticket selector open, and release locally at the exact scheduled time.`
+                      : "Open the event page, keep that tab visible, and resolve the readiness message shown on each selected device card."}
                   </p>
                 </div>
               )}
 
               <div className="mt-6 flex flex-wrap gap-3">
                 <button disabled={busy || Boolean(activeRun) || selected.length === 0} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
-                  {busy ? "Working…" : mode === "live" ? `Activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run fleet rehearsal"}
+                  {busy ? "Working…" : mode === "live" ? `Prepare + activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run fleet rehearsal"}
                 </button>
                 <button disabled={busy || !activeRun} onClick={stopAll} className="rounded-full border border-[#cbd2c7] px-5 py-3 text-sm font-bold text-[#4d594f] disabled:opacity-40">Stop active run</button>
                 <button disabled={busy || selected.length === 0} onClick={resetSelectedDevices} className="rounded-full border border-[#b46d57] px-5 py-3 text-sm font-bold text-[#8b4f3f] disabled:opacity-40">Reset selected devices</button>
