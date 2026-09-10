@@ -81,7 +81,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.11.1-test",
+    version: "0.12.1-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -97,7 +97,7 @@ async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Cl
     "/api/device",
     {
       action: "poll",
-      version: "0.11.1-test",
+      version: "0.12.1-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -107,6 +107,7 @@ async function poll(token: string, keys: DeviceKeyPair, eventTitle = "AUTOBOT Cl
         pageReady: true,
         eventUrl: "https://posh.vip/e/test-release",
         eventTitle,
+        pollIntervalMs: 15_000,
       },
     },
     { token },
@@ -172,7 +173,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.11.1-test",
+      version: "0.12.1-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },
@@ -204,7 +205,7 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
-  assert.equal(directoryState.controllerRevision, "0.12.0");
+  assert.equal(directoryState.controllerRevision, "0.12.1");
   const firstSeenAt = Number(directoryDevice?.lastSeenAt);
   await poll(executorOne.token, executorOne.keys, eventTitle);
   const duplicateState = await jsonRequest("/api/control", null, { cookie });
@@ -402,12 +403,73 @@ try {
 
   await jsonRequest(
     "/api/control",
+    { action: "reset-devices", deviceIds: [executorOne.id, executorTwo.id] },
+    { cookie },
+  );
+  const resetOne = (await poll(executorOne.token, executorOne.keys, eventTitle)).command as Record<string, unknown>;
+  const resetTwo = (await poll(executorTwo.token, executorTwo.keys, eventTitle)).command as Record<string, unknown>;
+  assert.equal(resetOne.type, "reset");
+  assert.equal(resetTwo.type, "reset");
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: resetOne.id, phase: "reset-complete" },
+    { token: executorOne.token },
+  );
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: resetTwo.id, phase: "reset-complete" },
+    { token: executorTwo.token },
+  );
+
+  const rerun = await jsonRequest(
+    "/api/control",
+    {
+      action: "create-run",
+      title: `${eventTitle} reset`,
+      eventUrl: "https://posh.vip/e/test-release",
+      eventTitle,
+      releaseAt: Date.now() + 60_000,
+      ticketStrategy: "any",
+      mode: "live",
+      organizerOwned: true,
+      permissionConfirmed: true,
+    },
+    { cookie },
+  );
+  const rerunId = String(rerun.id);
+  await jsonRequest(
+    "/api/control",
+    {
+      action: "arm-run",
+      runId: rerunId,
+      deviceIds: [executorOne.id],
+      confirmEventTitle: eventTitle,
+      firstSlotCount: 1,
+      encryptedSecrets: {
+        [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
+      },
+    },
+    { cookie },
+  );
+  await jsonRequest(
+    "/api/control",
+    { action: "reset-devices", deviceIds: [executorOne.id] },
+    { cookie },
+  );
+  const resetRerun = (await poll(executorOne.token, executorOne.keys, eventTitle)).command as Record<string, unknown>;
+  assert.equal(resetRerun.type, "reset", "reset must supersede an armed command");
+  const resetState = await jsonRequest("/api/control", null, { cookie });
+  const stoppedRerun = (resetState.runs as Array<Record<string, unknown>>).find((item) => item.id === rerunId);
+  assert.equal(stoppedRerun?.status, "stopped");
+
+  await jsonRequest(
+    "/api/control",
     { action: "remove-device", deviceId: executorTwo.id },
     { cookie },
   );
   const afterRemoval = await jsonRequest("/api/control", null, { cookie });
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
-  console.log("Control integration passed: enrollment, device directory, remote event opening, encrypted fleet delivery, confirmed/review results, and revocation.");
+  console.log("Control integration passed: enrollment, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }

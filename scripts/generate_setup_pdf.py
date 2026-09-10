@@ -39,7 +39,7 @@ def footer(canvas, doc):
     canvas.line(doc.leftMargin, 0.48 * inch, width - doc.rightMargin, 0.48 * inch)
     canvas.setFont("Helvetica", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(doc.leftMargin, 0.30 * inch, "AUTOBOT Owned-Event RSVP Lab v0.12.0")
+    canvas.drawString(doc.leftMargin, 0.30 * inch, "AUTOBOT Owned-Event RSVP Lab v0.12.1")
     canvas.drawRightString(width - doc.rightMargin, 0.30 * inch, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -53,7 +53,7 @@ def build_pdf():
         rightMargin=0.65 * inch,
         topMargin=0.58 * inch,
         bottomMargin=0.68 * inch,
-        title="AUTOBOT v0.12.0 Second Computer Setup",
+        title="AUTOBOT v0.12.1 Second Computer Setup",
         author="AUTOBOT RSVP Lab",
         subject="Copyable Windows and Mac setup instructions",
     )
@@ -189,7 +189,7 @@ def build_pdf():
         story.append(table)
         story.append(Spacer(1, 8))
 
-    story.append(Paragraph("AUTOBOT v0.12.0", title))
+    story.append(Paragraph("AUTOBOT v0.12.1", title))
     story.append(Paragraph("SECOND COMPUTER SETUP - WINDOWS AND MAC", subtitle))
     banner = Table(
         [[Paragraph("COPYABLE COMMANDS", badge), Paragraph("1-20 LAPTOPS", badge), Paragraph("REMOTE EVENT OPENING", badge)]],
@@ -223,7 +223,7 @@ def build_pdf():
     item("Install Google Chrome from https://www.google.com/chrome/")
     item("Install the current Node.js LTS release from https://nodejs.org/")
     item("Download the newest AUTOBOT release ZIP from https://github.com/danieleyny/autobot/releases/latest")
-    item("Extract the ZIP. Open the folder named AUTOBOT-System-v0.12.0.")
+    item("Extract the ZIP. Open the folder named AUTOBOT-System-v0.12.1.")
     callout(
         "<b>Already paired?</b> Run the new setup assistant without removing the laptop from the dashboard. "
         "It keeps the pairing and updates the startup path. Load the new extension folder, then restart the computer once."
@@ -275,7 +275,7 @@ def build_pdf():
     )
 
     h("2. Open PowerShell in the extracted folder")
-    p("In File Explorer, open AUTOBOT-System-v0.12.0. Click the address bar, type <b>powershell</b>, and press Enter.")
+    p("In File Explorer, open AUTOBOT-System-v0.12.1. Click the address bar, type <b>powershell</b>, and press Enter.")
 
     h("3. Run the setup assistant")
     code_box(".\\SETUP-WINDOWS.cmd")
@@ -300,7 +300,7 @@ def build_pdf():
     item("Open chrome://extensions and turn on Developer mode.")
     item("Click Load unpacked.")
     item("Select the inner <b>extension</b> folder, not the outer AUTOBOT folder.")
-    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.12.0 appears.")
+    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.12.1 appears.")
 
     story.append(PageBreak())
     story.append(Paragraph("MAC SETUP", title))
@@ -316,7 +316,7 @@ def build_pdf():
     )
 
     h("2. Move Terminal into the AUTOBOT folder")
-    p("Type <font name='Courier'>cd</font> followed by one space. Drag the extracted AUTOBOT-System-v0.12.0 folder into Terminal, then press Return.")
+    p("Type <font name='Courier'>cd</font> followed by one space. Drag the extracted AUTOBOT-System-v0.12.1 folder into Terminal, then press Return.")
 
     h("3. Run the setup assistant")
     code_box("chmod +x SETUP-MAC.command\n./SETUP-MAC.command")
@@ -344,7 +344,7 @@ def build_pdf():
     h("4. Load the extension")
     item("Open chrome://extensions and turn on Developer mode.")
     item("Click Load unpacked and select the inner <b>extension</b> folder.")
-    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.12.0 appears.")
+    item("Confirm AUTOBOT Owned-Event RSVP Lab v0.12.1 appears.")
 
     story.append(PageBreak())
     story.append(Paragraph("CONNECT, TEST, AND OPERATE", title))
@@ -380,12 +380,12 @@ def build_pdf():
     item("Each selected device receives one independent, one-use lease. Failed devices are not automatically retried.")
     callout(
         "The POSH Stay in the loop email/text dialog is a successful post-RSVP state. "
-        "AUTOBOT v0.12.0 recognizes it as confirmed without choosing either marketing option."
+        "AUTOBOT v0.12.1 recognizes it as confirmed without choosing either marketing option."
     )
 
-    h("6. Fleet directory and shutdown")
-    item("Use the Fleet directory tab to store optional account email, phone, and a secondary description.")
-    item("These details remain in the PIN-protected dashboard and are not sent to laptops.")
+    h("6. Reset, reactivate, or shut down")
+    item("After the organizer deletes or relists the mock tickets, click <b>Reset selected devices</b>. This stops the run, clears local locks, and makes those laptops ready to activate again.")
+    item("The Fleet directory can store optional account email, phone, and a description; these details are never sent to laptops.")
     item("Before removing a computer, stop any active run, choose Remove and revoke, uninstall startup if needed, remove the extension, and delete the extracted folder.")
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)

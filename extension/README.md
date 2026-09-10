@@ -7,12 +7,12 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.12.0
+## Optional Command Center in v0.12.1
 
-The normal panel remains fully standalone. If the local v0.12.0 device bridge is
+The normal panel remains fully standalone. If the local v0.12.1 device bridge is
 running, the bottom of the panel shows the paired device name and a green
 connection indicator. **Allow command center** controls whether that device may
-accept central inspection, live-fleet, and stop commands.
+accept central inspection, live-fleet, stop, and reset commands.
 
 Unchecking it immediately restores standalone-only operation. The local **Run /
 Arm** and **Stop** buttons always remain available. If a local run replaces a
@@ -61,13 +61,19 @@ Before each submission it clears and re-enters the prepared password because
 Posh clears failed password entries. Attempts never overlap: if Posh has not
 finished the previous response, missed clock targets are skipped. The page does
 not refresh, and the helper stops as soon as the event opens. Password
-acceptance becomes the trigger, so the RSVP sequence starts immediately even if
-the gate opens before the configured clock time. The password remains only in
+acceptance prepares the page; if the gate opens early, the helper holds the
+unlocked page until the synchronized release time before starting the RSVP
+sequence. The password remains only in
 the current page's memory, so keep the tab open.
 
-If the release-gate option is unchecked, the helper uses its original workflow:
-it unlocks and validates the event first, waits, refreshes once at release time,
-selects exactly one matching free ticket, and attempts checkout once.
+If the release-gate option is unchecked, the helper unlocks and validates the
+event first, waits without refreshing, selects exactly one matching free ticket,
+and attempts checkout once at the synchronized release time.
+
+The Command Center's **Reset selected devices** command stops the active run,
+clears this event's local one-shot locks on each selected laptop, and restores
+the local Run / Arm button. Use it only after the organizer-owned test tickets
+have been deleted or relisted.
 
 Event-title comparison ignores capitalization and repeated whitespace while
 still requiring a full-name match. The event title is auto-detected from the

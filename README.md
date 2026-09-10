@@ -8,7 +8,7 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.12.0 includes an optional multi-device Command Center for a variable
+AUTOBOT v0.12.1 includes an optional multi-device Command Center for a variable
 fleet of 1–20 laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
 password delivery, remote event-page opening, readiness checks, rehearsal,
@@ -17,7 +17,12 @@ capabilities. The Command Center can split the selected fleet between the first
 and second displayed ticket slots, and records the target used by each laptop.
 This release also holds an unlocked event until the exact release time, avoids a
 release-time refresh, retries a replaced RSVP control once, and recognizes
-POSH's post-RSVP update-preference dialog as a confirmed reservation.
+POSH's post-RSVP update-preference dialog as a confirmed reservation. The
+v0.12.1 fast-release path synchronizes each laptop to the controller clock,
+removes hosted network and database waits from the exact release moment, reacts
+to page changes immediately, and adds a central reset-and-reactivate command.
+Idle bridges now check in every 15 seconds and automatically return to
+one-second command polling whenever an event page or pending command is active.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -46,10 +51,10 @@ Use these steps when adding a friend's computer to the hosted Command Center:
    before attempting a controlled live test.
 
 To upgrade an already paired laptop, run the setup assistant from the extracted
-v0.12.0 folder. It preserves the saved device identity and Command Center
+v0.12.1 folder. It preserves the saved device identity and Command Center
 pairing; do not remove or revoke the laptop first. Remove the old unpacked
 AUTOBOT extension in `chrome://extensions`, load the new package's `extension`
-folder, and restart the computer once so the startup bridge switches to v0.12.0.
+folder, and restart the computer once so the startup bridge switches to v0.12.1.
 
 For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
@@ -68,7 +73,8 @@ enrollment code works for the configured number of laptops for up to 48 hours;
 every enrolled laptop remains blocked until approved in the dashboard. POSH
 sign-in, OTP, and CAPTCHA/Cloudflare checks remain local and manual. The
 dashboard may deliver an event password encrypted separately for each selected
-device running v0.11.0 or newer.
+device. Live fast-release activation requires the matching v0.12.1 bridge and
+extension on every selected laptop.
 
 ## Install
 
@@ -163,7 +169,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.12.0. On a POSH event page,
+Reload the unpacked extension after installing v0.12.1. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -188,8 +194,11 @@ participate, enter the password and release time once, and resolve every
 readiness message. The number shown on the **Activate devices** button is the
 exact number of one-use leases that will be issued.
 
-The dashboard overview summarizes the latest run as confirmed/passed, waiting
-or review, and issues. The **Fleet directory** tab stores optional POSH account
+After a controlled test, select the participating laptops and use **Reset
+selected devices** to stop any remaining run, clear their local test locks, and
+make them ready for another activation. Only reset after the organizer-owned
+test tickets have been deleted or relisted. The dashboard overview summarizes
+the latest run as confirmed/passed, waiting or review, and issues. The **Fleet directory** tab stores optional POSH account
 email, phone, and a secondary description for each laptop. Those fields remain
 dashboard-only and are never sent to the device or used by the automation.
 

@@ -5,6 +5,7 @@ import {
   DEVICE_KEEPALIVE_WRITE_MS,
   DEVICE_ONLINE_WINDOW_MS,
   DEVICE_POLL_UPDATE_SQL,
+  deviceOnlineWindowMs,
   devicePollUpdateBindings,
   isDeviceOnline,
 } from "../../control-panel/db/device-presence.js";
@@ -84,6 +85,10 @@ test("presence accounts for both saved keepalive age and the original connection
   assert.equal(isDeviceOnline(0, 20_000), false);
   assert.equal(isDeviceOnline(10_000, 22_500), true);
   assert.equal(isDeviceOnline(10_000, 22_501), false);
+  assert.equal(deviceOnlineWindowMs({ pollIntervalMs: 15_000 }), 37_500);
+  assert.equal(isDeviceOnline(10_000, 47_500, { pollIntervalMs: 15_000 }), true);
+  assert.equal(isDeviceOnline(10_000, 47_501, { pollIntervalMs: 15_000 }), false);
+  assert.equal(deviceOnlineWindowMs({ pollIntervalMs: 99_999 }), DEVICE_ONLINE_WINDOW_MS);
 });
 
 test("dashboard coalesces concurrent refreshes and recovers after an error", async () => {
@@ -122,7 +127,7 @@ test("hidden dashboards stop scheduled traffic and refresh on return", async () 
     setTimeout: (callback: () => void) => { timeouts.set(++id, callback); return id; },
     clearTimeout: (key: number) => { timeouts.delete(key); },
     setInterval: (callback: () => void, delay: number) => {
-      assert.equal(delay, 2_000); intervals.set(++id, callback); return id;
+      assert.equal(delay, 5_000); intervals.set(++id, callback); return id;
     },
     clearInterval: (key: number) => { intervals.delete(key); },
   };

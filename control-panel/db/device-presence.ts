@@ -1,12 +1,30 @@
 // Controller-only compatibility patch. Existing v0.11.x bridges still poll at
 // their original cadence; command delivery and reports must not be throttled.
-export const CONTROLLER_REVISION = "0.12.0";
+export const CONTROLLER_REVISION = "0.12.1";
 export const DEVICE_KEEPALIVE_WRITE_MS = 5_000;
 export const DEVICE_CONNECTION_GRACE_MS = 7_500;
 export const DEVICE_ONLINE_WINDOW_MS = DEVICE_KEEPALIVE_WRITE_MS + DEVICE_CONNECTION_GRACE_MS;
+export const DEVICE_MIN_POLL_INTERVAL_MS = 500;
+export const DEVICE_MAX_POLL_INTERVAL_MS = 30_000;
 
-export function isDeviceOnline(lastSeenAt: number | null, now: number): boolean {
-  return lastSeenAt !== null && lastSeenAt > 0 && lastSeenAt >= now - DEVICE_ONLINE_WINDOW_MS;
+export function deviceOnlineWindowMs(state: Record<string, unknown> = {}): number {
+  const reportedInterval = Number(state.pollIntervalMs);
+  if (
+    !Number.isFinite(reportedInterval) ||
+    reportedInterval < DEVICE_MIN_POLL_INTERVAL_MS ||
+    reportedInterval > DEVICE_MAX_POLL_INTERVAL_MS
+  ) {
+    return DEVICE_ONLINE_WINDOW_MS;
+  }
+  return Math.max(DEVICE_ONLINE_WINDOW_MS, Math.ceil(reportedInterval * 2.5));
+}
+
+export function isDeviceOnline(
+  lastSeenAt: number | null,
+  now: number,
+  state: Record<string, unknown> = {},
+): boolean {
+  return lastSeenAt !== null && lastSeenAt > 0 && lastSeenAt >= now - deviceOnlineWindowMs(state);
 }
 
 // Evaluate the condition in D1, not a Worker-local cache: concurrent polls and

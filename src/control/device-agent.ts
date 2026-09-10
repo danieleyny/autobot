@@ -10,7 +10,10 @@ type ControllerCommand = {
   payload: Record<string, unknown>;
 };
 
-const VERSION = "0.12.0";
+const VERSION = "0.12.1";
+const ACTIVE_POLL_INTERVAL_MS = 1_000;
+const IDLE_POLL_INTERVAL_MS = 15_000;
+const CLOCK_SAMPLE_LIMIT = 8;
 
 const file = configPath();
 const config = JSON.parse(await readFile(file, "utf8")) as DeviceConfig;
@@ -33,6 +36,70 @@ let pendingCommand: ControllerCommand | null = null;
 let controllerOnline = false;
 let approvalPending = false;
 let stopping = false;
+let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatDueAt = Number.POSITIVE_INFINITY;
+let heartbeatInFlight = false;
+let clockOffsetMs = 0;
+let clockRoundTripMs: number | null = null;
+const clockSamples: Array<{ offsetMs: number; roundTripMs: number }> = [];
+
+function pageConnectedNow() {
+  return Date.now() - extensionSeenAt < 4_000;
+}
+
+function extensionConnectedNow() {
+  return pageConnectedNow() || Date.now() - backgroundSeenAt < 4_000;
+}
+
+function desiredPollIntervalMs() {
+  return pageConnectedNow() || pendingCommand ? ACTIVE_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
+}
+
+function updateClockEstimate(serverTime: unknown, startedAt: number, finishedAt: number) {
+  const serverTimestamp = Number(serverTime);
+  if (!Number.isFinite(serverTimestamp)) return;
+  const roundTripMs = Math.max(0, finishedAt - startedAt);
+  if (roundTripMs > 5_000) return;
+  const observedOffsetMs = serverTimestamp - (startedAt + finishedAt) / 2;
+  // If a laptop's clock is corrected while the bridge is already running,
+  // discard samples from the old clock instead of waiting for them to age out.
+  if (clockSamples.length && Math.abs(observedOffsetMs - clockOffsetMs) > 1_000) {
+    clockSamples.length = 0;
+  }
+  clockSamples.push({
+    offsetMs: observedOffsetMs,
+    roundTripMs,
+  });
+  if (clockSamples.length > CLOCK_SAMPLE_LIMIT) clockSamples.shift();
+  const best = [...clockSamples].sort((left, right) => left.roundTripMs - right.roundTripMs)[0];
+  if (!best) return;
+  clockOffsetMs = Math.round(best.offsetMs);
+  clockRoundTripMs = Math.round(best.roundTripMs);
+}
+
+function scheduleHeartbeat(delayMs = desiredPollIntervalMs()) {
+  if (stopping) return;
+  const dueAt = Date.now() + Math.max(0, delayMs);
+  if (heartbeatTimer && heartbeatDueAt <= dueAt) return;
+  if (heartbeatTimer) clearTimeout(heartbeatTimer);
+  heartbeatDueAt = dueAt;
+  heartbeatTimer = setTimeout(() => {
+    heartbeatTimer = null;
+    heartbeatDueAt = Number.POSITIVE_INFINITY;
+    void runHeartbeat();
+  }, Math.max(0, delayMs));
+}
+
+async function runHeartbeat() {
+  if (heartbeatInFlight || stopping) return;
+  heartbeatInFlight = true;
+  try {
+    await heartbeat();
+  } finally {
+    heartbeatInFlight = false;
+    scheduleHeartbeat();
+  }
+}
 
 async function controllerRequest(body: Record<string, unknown>) {
   const response = await fetch(`${config.controllerUrl}/api/device`, {
@@ -51,10 +118,12 @@ async function controllerRequest(body: Record<string, unknown>) {
 
 async function heartbeat() {
   if (stopping) return;
+  const requestStartedAt = Date.now();
   try {
-    const pageConnected = Date.now() - extensionSeenAt < 4_000;
-    const extensionConnected = pageConnected || Date.now() - backgroundSeenAt < 4_000;
+    const pageConnected = pageConnectedNow();
+    const extensionConnected = extensionConnectedNow();
     const pageStatus = pageConnected ? extensionStatus : {};
+    const pollIntervalMs = desiredPollIntervalMs();
     const result = await controllerRequest({
       action: "poll",
       version: VERSION,
@@ -69,8 +138,10 @@ async function heartbeat() {
           pageStatus.controlEnabled !== false,
         pageReady: pageConnected && pageStatus.pageReady === true,
         bridgePort: port,
+        pollIntervalMs,
       },
     });
+    updateClockEstimate(result.serverTime, requestStartedAt, Date.now());
     controllerOnline = true;
     const wasApprovalPending = approvalPending;
     approvalPending = result.approvalPending === true;
@@ -140,18 +211,25 @@ app.get("/health", (_request, response) => {
     device: config.name,
     controllerOnline,
     approvalPending,
-    extensionConnected: Date.now() - extensionSeenAt < 4_000,
+    extensionConnected: extensionConnectedNow(),
     pendingCommand: pendingCommand?.type ?? null,
+    pollIntervalMs: desiredPollIntervalMs(),
+    clockOffsetMs,
+    clockRoundTripMs,
   });
 });
 
 app.post("/extension/poll", (request, response) => {
+  const wasPageConnected = pageConnectedNow();
   extensionSeenAt = Date.now();
   extensionStatus = request.body?.status && typeof request.body.status === "object" ? request.body.status : {};
+  if (!wasPageConnected) scheduleHeartbeat(0);
   response.json({
     connected: controllerOnline,
     approvalPending,
     deviceName: config.name,
+    clockOffsetMs,
+    clockRoundTripMs,
     command:
       extensionStatus.controlEnabled === false || pendingCommand?.type === "open-event"
         ? null
@@ -166,6 +244,8 @@ app.post("/extension/navigation-poll", (request, response) => {
     connected: controllerOnline,
     approvalPending,
     deviceName: config.name,
+    clockOffsetMs,
+    clockRoundTripMs,
     command:
       backgroundControlEnabled && pendingCommand?.type === "open-event"
         ? pendingCommand
@@ -196,6 +276,7 @@ app.post("/extension/report", async (request, response) => {
         "confirmed",
         "already-reserved",
         "event-opened",
+        "reset-complete",
         "local-override",
       ].includes(String(request.body?.phase))
     ) {
@@ -213,12 +294,11 @@ const server = app.listen(port, "127.0.0.1", () => {
   console.log(`Controller: ${config.controllerUrl}`);
 });
 
-const timer = setInterval(() => heartbeat().catch(() => {}), 1_000);
-await heartbeat();
+await runHeartbeat();
 
 function shutdown() {
   stopping = true;
-  clearInterval(timer);
+  if (heartbeatTimer) clearTimeout(heartbeatTimer);
   server.close(() => process.exit(0));
 }
 

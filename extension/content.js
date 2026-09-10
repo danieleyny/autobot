@@ -2,7 +2,7 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.12.0";
+  const VERSION = "0.12.1";
   const STATE_KEY = `autobot:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
   const DUPLICATE_PATTERN =
@@ -77,7 +77,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.12.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>v0.12.1</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -139,6 +139,8 @@
   let latestLogMessage = "Ready";
   let activeControlCommand = null;
   let handledControlCommandId = null;
+  let controllerClockOffsetMs = 0;
+  let controllerClockRoundTripMs = null;
 
   function log(message) {
     const time = new Date().toLocaleTimeString();
@@ -160,6 +162,10 @@
     return new Date(timestamp - offset).toISOString().slice(0, 16);
   }
 
+  function synchronizedNow() {
+    return Date.now() + controllerClockOffsetMs;
+  }
+
   function deviceControlStatus() {
     return {
       extensionVersion: VERSION,
@@ -174,7 +180,9 @@
       executing: Boolean(activeControlCommand?.executionStarted),
       commandId: activeControlCommand?.id || null,
       runId: activeControlCommand?.runId || null,
-      latestMessage: latestLogMessage
+      latestMessage: latestLogMessage,
+      clockOffsetMs: controllerClockOffsetMs,
+      clockRoundTripMs: controllerClockRoundTripMs
     };
   }
 
@@ -231,9 +239,9 @@
     stopped = false;
     armButton.disabled = true;
     const releaseAt = Number(command.payload?.releaseAt);
-    if (Number.isFinite(releaseAt) && releaseAt > Date.now()) {
+    if (Number.isFinite(releaseAt) && releaseAt > synchronizedNow()) {
       const updateCountdown = () => {
-        const seconds = Math.max(0, Math.ceil((releaseAt - Date.now()) / 1000));
+        const seconds = Math.max(0, Math.ceil((releaseAt - synchronizedNow()) / 1000));
         armButton.textContent = seconds > 0 ? `Standby · ${seconds}s` : "Standby · ready";
       };
       updateCountdown();
@@ -250,7 +258,14 @@
   async function handleControlCommand(command) {
     if (!command?.id) return;
     if (handledControlCommandId === command.id) {
-      const retryPhase = command.type === "standby" ? "standby" : command.type === "stop" ? "stopped" : "accepted";
+      const retryPhase =
+        command.type === "standby"
+          ? "standby"
+          : command.type === "stop"
+            ? "stopped"
+            : command.type === "reset"
+              ? "reset-complete"
+              : "accepted";
       await controlReport(command, retryPhase).catch(() => {});
       return;
     }
@@ -261,6 +276,12 @@
       await disarm();
       await controlReport(command, "stopped");
       activeControlCommand = null;
+      return;
+    }
+    if (command.type === "reset") {
+      activeControlCommand = null;
+      await resetEventLocks(false);
+      await controlReport(command, "reset-complete");
       return;
     }
     if (command.type === "standby") {
@@ -280,7 +301,7 @@
     activeControlCommand = command;
     applyControlConfiguration(command);
     log(`Command center: ${command.type === "inspect" ? "inspection" : "live fleet"} command accepted.`);
-    await controlReport(command, "accepted");
+    void controlReport(command, "accepted").catch(() => {});
     // Keep the local control loop free while the timed run waits. This allows a
     // central Stop command to arrive without disturbing the local release clock.
     void arm(command);
@@ -293,6 +314,10 @@
       status: deviceControlStatus()
     });
     const connected = Boolean(result?.connected);
+    const nextClockOffset = Number(result?.clockOffsetMs);
+    if (Number.isFinite(nextClockOffset)) controllerClockOffsetMs = nextClockOffset;
+    const nextClockRoundTrip = Number(result?.clockRoundTripMs);
+    if (Number.isFinite(nextClockRoundTrip)) controllerClockRoundTripMs = nextClockRoundTrip;
     controlDot.classList.toggle("online", connected);
     controlStatus.textContent = connected
       ? result.approvalPending
@@ -383,14 +408,51 @@
   }
 
   async function waitFor(read, timeoutMs, description) {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      if (stopped) throw new Error("Stopped by user.");
-      const result = read();
-      if (result) return result;
-      await new Promise((resolve) => setTimeout(resolve, DOM_POLL_MS));
-    }
-    throw new Error(`Timed out waiting for ${description}.`);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let observer = null;
+      let fallbackTimer = null;
+      let timeoutTimer = null;
+
+      const cleanup = () => {
+        observer?.disconnect();
+        if (fallbackTimer) clearInterval(fallbackTimer);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+      };
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback(value);
+      };
+      const check = () => {
+        if (settled) return;
+        if (stopped) {
+          finish(reject, new Error("Stopped by user."));
+          return;
+        }
+        try {
+          const result = read();
+          if (result) finish(resolve, result);
+        } catch (error) {
+          finish(reject, error);
+        }
+      };
+
+      observer = new MutationObserver(check);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+      fallbackTimer = setInterval(check, 100);
+      timeoutTimer = setTimeout(
+        () => finish(reject, new Error(`Timed out waiting for ${description}.`)),
+        timeoutMs
+      );
+      check();
+    });
   }
 
   function setNativeValue(input, value) {
@@ -748,14 +810,14 @@
       if (!activeControlCommand || activeControlCommand.id !== config.controlCommandId) {
         throw new Error("The central execution lease is no longer attached to this run.");
       }
-      await controlReport(activeControlCommand, "execution-started", {
+      void controlReport(activeControlCommand, "execution-started", {
         eventTitle: config.eventTitle,
         releaseAt: config.releaseAt
-      });
+      }).catch(() => {});
       config.controlExecutionStarted = true;
       activeControlCommand.executionStarted = true;
-      await saveState(config);
-      log("Command center lease activated. This is the only centrally authorized executor.");
+      void saveState(config).catch(() => {});
+      log("Local release clock started the authorized RSVP sequence.");
     }
     await openTicketPicker();
 
@@ -841,18 +903,15 @@
       throw new Error(`Expected one add control in the ticket card, found ${addButtons.length}.`);
     }
 
-    const state = await loadState();
-    const attemptedTicketNames = state?.attemptedTicketNames || [];
+    const attemptedTicketNames = config.attemptedTicketNames || [];
     if (attemptedTicketNames.some((ticketName) => sameText(ticketName, resolvedTicketName))) {
       throw new Error(`Safety stop: this run already attempted ${resolvedTicketName}.`);
     }
     if (attemptedTicketNames.length >= MAX_TICKET_ATTEMPTS) {
       throw new Error("Safety stop: this run already attempted both RSVP options.");
     }
-    await saveState({
-      ...state,
-      attemptedTicketNames: [...attemptedTicketNames, resolvedTicketName]
-    });
+    config.attemptedTicketNames = [...attemptedTicketNames, resolvedTicketName];
+    void saveState(config).catch(() => {});
 
     addButtons[0].click();
     await waitFor(() => {
@@ -923,9 +982,7 @@
     outcome.click();
     log("Final RSVP submitted once. Waiting for POSH confirmation.");
     if (config.controlCommandId && activeControlCommand?.id === config.controlCommandId) {
-      await controlReport(activeControlCommand, "submitted", { ticketName: resolvedTicketName }).catch(
-        () => {}
-      );
+      void controlReport(activeControlCommand, "submitted", { ticketName: resolvedTicketName }).catch(() => {});
     }
     let finalResult;
     try {
@@ -959,7 +1016,12 @@
 
   function configFromPanel() {
     const releaseValue = $("#release-at").value;
-    const releaseAt = releaseValue ? new Date(releaseValue).getTime() : Date.now();
+    const commandedReleaseAt = Number(activeControlCommand?.payload?.releaseAt);
+    const releaseAt = Number.isFinite(commandedReleaseAt)
+      ? commandedReleaseAt
+      : releaseValue
+        ? new Date(releaseValue).getTime()
+        : synchronizedNow();
     if (!Number.isFinite(releaseAt)) throw new Error("Release time is invalid.");
     return {
       eventTitle:
@@ -1018,28 +1080,21 @@
   }
 
   async function schedule(config) {
-    const remaining = config.releaseAt - Date.now();
+    const remaining = config.releaseAt - synchronizedNow();
     if (remaining <= 0) {
       await executeReservation(config);
       return;
     }
 
     log(`Armed. Waiting ${Math.ceil(remaining / 1000)} seconds.`);
-    countdownTimer = setInterval(() => {
-      const seconds = Math.max(0, Math.ceil((config.releaseAt - Date.now()) / 1000));
-      armButton.textContent = `Armed · ${seconds}s`;
-    }, 250);
-
-    setTimeout(async () => {
-      if (stopped) return;
-      clearInterval(countdownTimer);
-      await executeReservation(config).catch(fail);
-    }, remaining);
+    await waitUntil(config.releaseAt);
+    if (stopped) return;
+    await executeReservation(config);
   }
 
   async function waitUntil(timestamp) {
-    while (!stopped && Date.now() < timestamp) {
-      const remaining = timestamp - Date.now();
+    while (!stopped && synchronizedNow() < timestamp) {
+      const remaining = timestamp - synchronizedNow();
       armButton.textContent = `Armed · ${Math.max(0, Math.ceil(remaining / 1000))}s`;
       const delay = remaining > 2_000 ? 250 : remaining > 250 ? 25 : 5;
       await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
@@ -1054,11 +1109,11 @@
 
     const startAt = config.releaseAt - GATE_EARLY_MS;
     const stopAt = config.releaseAt + GATE_LATE_MS;
-    if (Date.now() < startAt) {
+    if (synchronizedNow() < startAt) {
       log(`Armed. Password attempts begin two minutes before release.`);
       await waitUntil(startAt);
     }
-    if (Date.now() > stopAt) {
+    if (synchronizedNow() > stopAt) {
       throw new Error("The password retry window ended more than two minutes ago.");
     }
 
@@ -1066,7 +1121,7 @@
     log(`Release-gate window started. Using up to ${GATE_ATTEMPT_OFFSETS_MS.length} fixed clock targets with no refresh.`);
     for (const offset of GATE_ATTEMPT_OFFSETS_MS) {
       const scheduledAt = config.releaseAt + offset;
-      if (scheduledAt < Date.now()) continue;
+      if (scheduledAt < synchronizedNow()) continue;
       await waitUntil(scheduledAt);
 
       attempts += 1;
@@ -1080,7 +1135,7 @@
           gateRetrying: false
         };
         await saveState(safeState);
-        if (Date.now() < config.releaseAt) {
+        if (synchronizedNow() < config.releaseAt) {
           log("Gate opened early; holding the prepared page until the exact release time.");
           await waitUntil(config.releaseAt);
         }
@@ -1121,7 +1176,7 @@
         gateVisible &&
         config.retryGate &&
         config.releaseConfigured &&
-        config.releaseAt > Date.now() - GATE_LATE_MS;
+        config.releaseAt > synchronizedNow() - GATE_LATE_MS;
 
       if (timedGateMode) {
         await saveState({
@@ -1153,30 +1208,32 @@
     log("Stopped and cleared.");
   }
 
-  async function resetEventLocks() {
+  async function resetEventLocks(confirmLocally = true) {
     const allStored = await chrome.storage.local.get(null);
     const prefix = `autobot-complete:${location.pathname}:`;
     const matchingKeys = Object.keys(allStored).filter((key) => key.startsWith(prefix));
-    if (!matchingKeys.length) {
-      log("No completed test locks exist for this event.");
-      return;
-    }
 
-    const confirmed = window.confirm(
-      `Clear ${matchingKeys.length} completed RSVP test lock${matchingKeys.length === 1 ? "" : "s"} for this event?\n\nOnly use this after deleting/relisting the organizer-owned test ticket and confirming the prior reservation is no longer active.`
-    );
-    if (!confirmed) {
-      log("Test-lock reset canceled.");
-      return;
+    if (confirmLocally && matchingKeys.length) {
+      const confirmed = window.confirm(
+        `Clear ${matchingKeys.length} completed RSVP test lock${matchingKeys.length === 1 ? "" : "s"} for this event?\n\nOnly use this after deleting/relisting the organizer-owned test ticket and confirming the prior reservation is no longer active.`
+      );
+      if (!confirmed) {
+        log("Test-lock reset canceled.");
+        return;
+      }
     }
 
     stopped = true;
     clearInterval(countdownTimer);
     await clearState();
-    await chrome.storage.local.remove(matchingKeys);
+    if (matchingKeys.length) await chrome.storage.local.remove(matchingKeys);
     armButton.disabled = false;
     armButton.textContent = "Run / Arm";
-    log(`Cleared ${matchingKeys.length} completed test lock${matchingKeys.length === 1 ? "" : "s"} for this event.`);
+    log(
+      matchingKeys.length
+        ? `Reset this event and cleared ${matchingKeys.length} completed test lock${matchingKeys.length === 1 ? "" : "s"}.`
+        : "Reset this event. This device is ready to activate again."
+    );
   }
 
   function fail(error) {

@@ -1,8 +1,12 @@
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 
-async function installChromeMock(page: import("@playwright/test").Page, command: Record<string, unknown>) {
-  await page.addInitScript((initialCommand) => {
+async function installChromeMock(
+  page: import("@playwright/test").Page,
+  command: Record<string, unknown>,
+  options: { stallReports?: boolean } = {},
+) {
+  await page.addInitScript(({ initialCommand, stallReports }) => {
     const values: Record<string, unknown> = {};
     let pending: Record<string, unknown> | null = initialCommand;
     const reports: Array<Record<string, unknown>> = [];
@@ -28,8 +32,9 @@ async function installChromeMock(page: import("@playwright/test").Page, command:
         if (message.type === "autobot:control-report") {
           const report = message.report as Record<string, unknown>;
           reports.push(report);
+          if (stallReports) return new Promise(() => {});
           if (
-            ["accepted", "standby", "stopped", "failed", "inspection-complete", "submitted", "confirmed"].includes(
+            ["accepted", "standby", "stopped", "reset-complete", "failed", "inspection-complete", "submitted", "confirmed"].includes(
               String(report.phase)
             )
           ) {
@@ -44,7 +49,7 @@ async function installChromeMock(page: import("@playwright/test").Page, command:
       value: { storage: { local: storage }, runtime },
       configurable: true
     });
-  }, command);
+  }, { initialCommand: command, stallReports: options.stallReports === true });
 }
 
 test("central inspection command verifies a free ticket without selecting it", async ({ page }) => {
@@ -290,4 +295,98 @@ test("central slot-two assignment selects the second displayed free RSVP", async
       { timeout: 10_000 },
     )
     .toContain("confirmed");
+});
+
+test("central reset clears this event and makes the device ready to activate again", async ({ page }) => {
+  await installChromeMock(page, {
+    id: "reset-command",
+    runId: null,
+    type: "reset",
+    payload: {}
+  });
+  await page.goto("http://127.0.0.1:4173/event");
+  await page.setContent("<title>Reset Test</title><main><h1>Reset Test</h1></main>");
+  await page.evaluate(async () => {
+    const localStorage = (window as unknown as {
+      chrome: { storage: { local: { set(values: Record<string, unknown>): Promise<void> } } };
+    }).chrome.storage.local;
+    await localStorage.set({
+      "autobot:/event": {
+        armed: true,
+        eventTitle: "Reset Test",
+        ticketStrategy: "first",
+        releaseAt: Date.now() + 60_000,
+        execute: true
+      },
+      "autobot-complete:/event:first slot": { at: new Date().toISOString() }
+    });
+  });
+  await page.addScriptTag({ path: path.resolve("extension/content.js") });
+
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __autobotControlReports: Array<{ phase: string }> })
+              .__autobotControlReports.map((report) => report.phase),
+        ),
+      { timeout: 5_000 },
+    )
+    .toContain("reset-complete");
+  const savedKeys = await page.evaluate(async () => {
+    const localStorage = (window as unknown as {
+      chrome: { storage: { local: { get(keys: null): Promise<Record<string, unknown>> } } };
+    }).chrome.storage.local;
+    return Object.keys(await localStorage.get(null));
+  });
+  expect(savedKeys).not.toContain("autobot:/event");
+  expect(savedKeys).not.toContain("autobot-complete:/event:first slot");
+  await expect(page.locator("#arm")).toHaveText("Run / Arm");
+  await expect(page.locator("#status")).toContainText("Reset this event");
+});
+
+test("release click does not wait for controller reporting", async ({ page }) => {
+  const releaseAt = Date.now() + 1_200;
+  await installChromeMock(
+    page,
+    {
+      id: "fast-release-command",
+      runId: "fast-release-run",
+      type: "arm-live",
+      payload: {
+        runId: "fast-release-run",
+        eventUrl: "http://127.0.0.1:4173/event",
+        eventTitle: "Fast Release Test",
+        releaseAt,
+        ticketStrategy: "first",
+        leaseId: "fast-release-lease",
+        execute: true
+      }
+    },
+    { stallReports: true },
+  );
+  await page.goto("http://127.0.0.1:4173/event");
+  await page.setContent(
+    '<title>Fast Release Test</title><main id="root"><h1>Fast Release Test</h1><button id="open">RSVP</button></main>',
+  );
+  await page.evaluate(() => {
+    Object.assign(window, { __firstReleaseClickAt: 0 });
+    document.querySelector("#open")?.addEventListener("click", () => {
+      (window as unknown as { __firstReleaseClickAt: number }).__firstReleaseClickAt = Date.now();
+    });
+  });
+  await page.addScriptTag({ path: path.resolve("extension/content.js") });
+
+  await expect
+    .poll(
+      () => page.evaluate(() => (window as unknown as { __firstReleaseClickAt: number }).__firstReleaseClickAt),
+      { timeout: 3_000 },
+    )
+    .not.toBe(0);
+  const observedClickAt = await page.evaluate(
+    () => (window as unknown as { __firstReleaseClickAt: number }).__firstReleaseClickAt,
+  );
+  expect(observedClickAt).toBeGreaterThanOrEqual(releaseAt - 25);
+  expect(observedClickAt).toBeLessThan(releaseAt + 500);
 });

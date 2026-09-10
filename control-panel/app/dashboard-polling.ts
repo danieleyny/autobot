@@ -20,8 +20,8 @@ type PollClock = {
   clearInterval(id: number): void;
 };
 
-// An open, visible dashboard keeps its existing two-second refresh rate. Hidden
-// tabs make no scheduled requests and refresh immediately when brought back.
+// Control actions refresh immediately on completion. The passive dashboard view
+// uses a lighter cadence, while hidden tabs make no scheduled requests.
 export function startDashboardPolling(
   refresh: () => Promise<void>,
   visibility: VisibilitySource,
@@ -36,7 +36,7 @@ export function startDashboardPolling(
     refresh().catch((error) => { if (reportInitialError) onInitialError(error); });
   };
   const initialTimer = clock.setTimeout(refreshVisible, 0);
-  const timer = clock.setInterval(refreshVisible, 2_000);
+  const timer = clock.setInterval(refreshVisible, 5_000);
   visibility.addEventListener("visibilitychange", refreshVisible);
   return () => {
     clock.clearTimeout(initialTimer);
