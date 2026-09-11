@@ -198,6 +198,20 @@ async function acceptCommand(runtime: WorkerRuntime, command: ControllerCommand)
     return;
   }
 
+  if (decryptedCommand.type === "refresh-host") {
+    for (const hostRuntime of runtimes.values()) {
+      hostRuntime.clockSamples.length = 0;
+      hostRuntime.clockOffsetMs = 0;
+      hostRuntime.clockRoundTripMs = null;
+      scheduleHeartbeat(hostRuntime, 0);
+    }
+    await reportCommand(runtime, decryptedCommand, "host-refreshed", {
+      workers: runtimes.size,
+    });
+    console.log(`${config.hostName}: refreshed ${runtimes.size} controller channels.`);
+    return;
+  }
+
   runtime.pendingCommand = decryptedCommand;
   console.log(`${runtime.worker.name}: received ${decryptedCommand.type} command ${decryptedCommand.id}.`);
   if (decryptedCommand.type === "open-event" && !extensionConnectedNow(runtime)) {

@@ -235,7 +235,7 @@ def build_pdf():
     code_box(
         "npm install\n\n"
         "npm run profiles:setup -- `\n"
-        "  --controller=https://autobot-command-center.avgschnook.chatgpt.site `\n"
+        "  --controller=https://autobot-profile-host-beta.avgschnook.chatgpt.site `\n"
         "  --code=ENROLLMENT_CODE `\n"
         "  --name=\"Studio PC 1\" `\n"
         "  --workers=4\n\n"
@@ -273,7 +273,7 @@ def build_pdf():
     code_box(
         "npm install\n\n"
         "npm run profiles:setup -- \\\n"
-        "  --controller=https://autobot-command-center.avgschnook.chatgpt.site \\\n"
+        "  --controller=https://autobot-profile-host-beta.avgschnook.chatgpt.site \\\n"
         "  --code=ENROLLMENT_CODE \\\n"
         "  --name=\"Studio Mac 1\" \\\n"
         "  --workers=4\n\n"

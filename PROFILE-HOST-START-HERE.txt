@@ -9,7 +9,8 @@ one-use execution lease. The original classic setup remains available.
 BEFORE STARTING
 
 1. Install current Google Chrome and Node.js LTS.
-2. In the Command Center, create a 48-hour enrollment code with one available
+2. Open https://autobot-profile-host-beta.avgschnook.chatgpt.site and create a
+   48-hour enrollment code with one available
    use for every Chrome worker you plan to create.
 3. Close ordinary Chrome windows on this computer for the smoothest first
    setup.

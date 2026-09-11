@@ -117,7 +117,7 @@ const suppliedCode = readOption("code")?.trim().toUpperCase() ?? "";
 const requestedWorkerCount = readOption("workers");
 if (!config) {
   const controllerUrl = normalizeControllerUrl(
-    readOption("controller", "https://autobot-command-center.avgschnook.chatgpt.site")!,
+    readOption("controller", "https://autobot-profile-host-beta.avgschnook.chatgpt.site")!,
   );
   const hostName = readOption("name")?.trim().slice(0, 60) ?? "";
   const desiredWorkerCount = workerCount(requestedWorkerCount, 4);

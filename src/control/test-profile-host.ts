@@ -189,7 +189,30 @@ try {
       "setup-token-3:command-3:inspection-complete",
     ],
   );
-  console.log("Profile host integration passed: setup, worker replacement, isolated routing, independent commands, and bridge-token rejection.");
+
+  commands.set("setup-token-3", {
+    id: "refresh-command",
+    runId: null,
+    type: "refresh-host",
+    payload: {},
+  });
+  const refreshDeadline = Date.now() + 5_000;
+  while (
+    !reports.some((report) => report.commandId === "refresh-command" && report.phase === "host-refreshed") &&
+    Date.now() < refreshDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(
+    reports.some((report) => report.commandId === "refresh-command" && report.phase === "host-refreshed"),
+    "The host refresh command should be acknowledged without involving a page worker.",
+  );
+  const healthResponse = await fetch(`http://127.0.0.1:${bridgePort}/health`);
+  const health = (await healthResponse.json()) as Record<string, unknown>;
+  assert.equal(health.ok, true);
+  assert.equal((health.workers as unknown[]).length, 2);
+  assert.equal(typeof (health.resources as Record<string, unknown>).totalMemoryMb, "number");
+  console.log("Profile host integration passed: setup, replacement, isolated routing, independent commands, host refresh, diagnostics, and bridge-token rejection.");
 } finally {
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));

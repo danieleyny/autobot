@@ -25,7 +25,7 @@ if exist "%LOCALAPPDATA%\AUTOBOT\profile-host.json" (
   set /p PAIR_CODE=Enter the 48-hour enrollment code: 
   set /p HOST_NAME=Enter this computer's name, for example Studio PC 1: 
   set /p WORKER_COUNT=How many Chrome workers on this computer? Enter 1-4: 
-  call npm run profiles:setup -- --controller=https://autobot-command-center.avgschnook.chatgpt.site --code=%PAIR_CODE% --name="%HOST_NAME%" --workers=%WORKER_COUNT%
+  call npm run profiles:setup -- --controller=https://autobot-profile-host-beta.avgschnook.chatgpt.site --code=%PAIR_CODE% --name="%HOST_NAME%" --workers=%WORKER_COUNT%
 )
 if errorlevel 1 (
   echo Profile-host setup failed. Confirm the enrollment code and try again.

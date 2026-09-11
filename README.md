@@ -17,6 +17,18 @@ profiles with one click after their one-time setup. The classic bridge stays on
 port 4181; the profile host uses port 4182, so both modes can coexist without
 changing an existing pairing.
 
+The beta dashboard adds an automatic system check, a session-only event
+configuration lock, host capacity/clock diagnostics, per-profile Launch and
+Reset controls, whole-host Reset, and a safe bridge refresh command. Start with
+the built-in two-profile acceptance check before increasing a host to three or
+four workers.
+
+The v0.13 profile-host beta uses its own isolated dashboard at
+https://autobot-profile-host-beta.avgschnook.chatgpt.site. The working v0.12.2
+classic dashboard remains unchanged at
+https://autobot-command-center.avgschnook.chatgpt.site, providing an immediate
+rollback path while the profile-host flow is acceptance tested.
+
 The Command Center supports a variable fleet of 1-20 workers or classic
 laptops. Every device keeps the original local extension controls;
 pairing adds batch enrollment and approval, central event setup, encrypted
@@ -92,7 +104,7 @@ The equivalent manual commands are:
 ```bash
 npm install
 npm run profiles:setup -- \
-  --controller=https://autobot-command-center.avgschnook.chatgpt.site \
+  --controller=https://autobot-profile-host-beta.avgschnook.chatgpt.site \
   --code=ENROLLMENT_CODE \
   --name="Studio Computer 1" \
   --workers=4

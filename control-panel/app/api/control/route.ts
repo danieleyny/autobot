@@ -340,6 +340,55 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      case "refresh-profile-host": {
+        const deviceId = nonEmpty(body.deviceId, "Device ID");
+        const device = await getD1()
+          .prepare(
+            `SELECT id, name, version, approval_status, last_seen_at, state_json FROM devices
+             WHERE id = ? AND owner_id = ? LIMIT 1`,
+          )
+          .bind(deviceId, user.userId)
+          .first<{
+            id: string;
+            name: string;
+            version: string;
+            approval_status: string;
+            last_seen_at: number | null;
+            state_json: string;
+          }>();
+        if (!device) throw new Error("Profile host worker not found.");
+        const state = parseJson<Record<string, unknown>>(device.state_json, {});
+        if (device.approval_status !== "approved") throw new Error("Approve this profile host first.");
+        if (!versionAtLeast(device.version, [0, 13, 0]) || state.profileMode !== "multi") {
+          throw new Error("This command is available only for a v0.13 multi-profile host.");
+        }
+        if (!isDeviceOnline(device.last_seen_at, nowMs(), state)) {
+          throw new Error("The profile-host service is offline. Start it locally before requesting a refresh.");
+        }
+        const timestamp = nowMs();
+        const db = getD1();
+        await db.batch([
+          db.prepare(
+            `UPDATE commands SET status = 'acknowledged', acknowledged_at = ?
+             WHERE owner_id = ? AND device_id = ? AND type = 'refresh-host'
+               AND status IN ('queued', 'delivered')`,
+          ).bind(timestamp, user.userId, deviceId),
+          db.prepare(
+            `INSERT INTO commands
+             (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+             VALUES (?, ?, ?, NULL, 'refresh-host', '{}', 'queued', ?)`,
+          ).bind(crypto.randomUUID(), user.userId, deviceId, timestamp),
+        ]);
+        await audit({
+          ownerId: user.userId,
+          deviceId,
+          source: "control",
+          action: "profile-host-refresh-requested",
+          detail: { hostId: state.hostId ?? null },
+        });
+        return NextResponse.json({ ok: true });
+      }
+
       case "launch-workers": {
         const selectedIds = Array.isArray(body.deviceIds)
           ? [...new Set(body.deviceIds.filter((id): id is string => typeof id === "string" && id.length > 0))]

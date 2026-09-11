@@ -223,6 +223,19 @@ try {
     { action: "report", commandId: launchTwoCommand.id, phase: "worker-launched" },
     { token: executorTwo.token },
   );
+  await jsonRequest(
+    "/api/control",
+    { action: "refresh-profile-host", deviceId: executorOne.id },
+    { cookie },
+  );
+  const refreshPoll = await poll(executorOne.token, executorOne.keys, eventTitle);
+  const refreshCommand = refreshPoll.command as Record<string, unknown>;
+  assert.equal(refreshCommand.type, "refresh-host");
+  await jsonRequest(
+    "/api/device",
+    { action: "report", commandId: refreshCommand.id, phase: "host-refreshed" },
+    { token: executorOne.token },
+  );
 
   await jsonRequest(
     "/api/control",
@@ -530,7 +543,7 @@ try {
   );
   const afterRemoval = await jsonRequest("/api/control", null, { cookie });
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
-  console.log("Control integration passed: profile-host launch, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
+  console.log("Control integration passed: profile-host launch/refresh, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
 } finally {
   if (server && !server.killed) server.kill("SIGTERM");
 }

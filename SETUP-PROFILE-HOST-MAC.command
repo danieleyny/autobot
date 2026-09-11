@@ -21,7 +21,7 @@ else
   read "HOST_NAME?Enter this computer's name, for example Studio Mac 1: "
   read "WORKER_COUNT?How many Chrome workers on this computer? Enter 1-4: "
   npm run profiles:setup -- \
-    --controller=https://autobot-command-center.avgschnook.chatgpt.site \
+    --controller=https://autobot-profile-host-beta.avgschnook.chatgpt.site \
     --code="$PAIR_CODE" \
     --name="$HOST_NAME" \
     --workers="$WORKER_COUNT"
