@@ -14,7 +14,7 @@ export default async function LoginPage() {
           <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#b8ff5a] font-mono text-sm font-black text-[#172018]">AB</span>
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#aab4a9]">Private operator access</p>
-            <h1 className="text-xl font-semibold tracking-tight">AUTOBOT Command Center</h1>
+            <h1 className="text-xl font-semibold tracking-tight">AUTOBOT Profile Host Beta</h1>
           </div>
         </div>
         <div className="mt-8 border-t border-[#465148] pt-7">
