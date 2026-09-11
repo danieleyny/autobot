@@ -68,6 +68,13 @@ type ProfileHostGroup = {
   workers: Device[];
 };
 
+type PreflightCheck = {
+  id: string;
+  label: string;
+  detail: string;
+  status: "pass" | "warn" | "fail";
+};
+
 const emptyState: ControlState = {
   devices: [],
   runs: [],
@@ -79,6 +86,7 @@ const emptyState: ControlState = {
 
 const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
 const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/latest";
+const PROFILE_HOST_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/tag/v0.13.0-beta";
 
 function versionAtLeast(version: string, required: [number, number, number]) {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
@@ -101,6 +109,18 @@ function sameEventPage(left: unknown, right: string) {
     const leftUrl = new URL(left);
     const rightUrl = new URL(right);
     return leftUrl.hostname === rightUrl.hostname && leftUrl.pathname === rightUrl.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function validEventUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" && url.hostname === "posh.vip" && url.pathname.startsWith("/e/")) ||
+      (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname))
+    );
   } catch {
     return false;
   }
@@ -192,6 +212,8 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [liveConfirmation, setLiveConfirmation] = useState("");
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [configurationLocked, setConfigurationLocked] = useState(false);
+  const [preflightRanAt, setPreflightRanAt] = useState<number | null>(null);
 
   const refreshState = useCallback(async () => {
     const response = await fetch("/api/control", { cache: "no-store" });
@@ -299,6 +321,86 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     0,
     latestRunDevices.length - latestConfirmed - latestNeedsReview - latestIssues,
   );
+  const selectedProfileHosts = profileHostGroups.filter((host) =>
+    host.workers.some((worker) => selectedIdSet.has(worker.id)),
+  );
+  const preflightChecks: PreflightCheck[] = (() => {
+    const checks: PreflightCheck[] = [
+      {
+        id: "selection",
+        label: "Fleet selected",
+        detail: selected.length ? `${selected.length} device${selected.length === 1 ? "" : "s"} selected.` : "Select at least one device.",
+        status: selected.length ? "pass" : "fail",
+      },
+      {
+        id: "event-url",
+        label: "Event URL",
+        detail: validEventUrl(eventUrl) ? "Organizer-owned event URL is valid." : "Enter a valid POSH /e/ event URL.",
+        status: validEventUrl(eventUrl) ? "pass" : "fail",
+      },
+      {
+        id: "event-title",
+        label: "Exact event title",
+        detail: eventTitle.trim() ? "Event title is set." : "Enter the exact title shown on the event page.",
+        status: eventTitle.trim() ? "pass" : "fail",
+      },
+    ];
+    if (mode === "live") {
+      const releaseTimestamp = releaseAt ? new Date(releaseAt).getTime() : Number.NaN;
+      checks.push({
+        id: "release-time",
+        label: "Release time",
+        detail: Number.isFinite(releaseTimestamp) && releaseTimestamp > state.serverTime
+          ? `Scheduled for ${new Date(releaseTimestamp).toLocaleString()}.`
+          : "Choose a release time in the future.",
+        status: Number.isFinite(releaseTimestamp) && releaseTimestamp > state.serverTime ? "pass" : "fail",
+      });
+      checks.push({
+        id: "authorization",
+        label: "Test authorization",
+        detail: organizerOwned && permissionConfirmed && liveConfirmation.trim() === eventTitle.trim()
+          ? "Ownership, permission and title confirmation are complete."
+          : "Confirm ownership, permission and type the exact event title.",
+        status: organizerOwned && permissionConfirmed && liveConfirmation.trim() === eventTitle.trim() ? "pass" : "fail",
+      });
+    }
+    for (const device of selectedDevices) {
+      const issue = readinessIssue(device, eventUrl, eventTitle);
+      const deviceClockOffset = Math.abs(Number(device.state.clockOffsetMs ?? 0));
+      const deviceRoundTrip = Number(device.state.clockRoundTripMs ?? 0);
+      checks.push({
+        id: `device-${device.id}`,
+        label: device.name,
+        detail: issue || (deviceClockOffset > 750
+          ? `Ready, but its clock differs by ${Math.round(deviceClockOffset)}ms.`
+          : deviceRoundTrip > 1_000
+            ? `Ready, but controller latency is ${Math.round(deviceRoundTrip)}ms.`
+            : "Online, current, encrypted and on the correct visible event page."),
+        status: issue ? "fail" : deviceClockOffset > 750 || deviceRoundTrip > 1_000 ? "warn" : "pass",
+      });
+    }
+    for (const host of selectedProfileHosts) {
+      const resources = host.workers.find(
+        (worker) => worker.state.hostResources && typeof worker.state.hostResources === "object",
+      )?.state.hostResources as Record<string, unknown> | undefined;
+      if (!resources) continue;
+      const totalMemoryMb = Number(resources.totalMemoryMb || 0);
+      const freeMemoryMb = Number(resources.freeMemoryMb || 0);
+      const selectedWorkers = host.workers.filter((worker) => selectedIdSet.has(worker.id)).length;
+      const constrained = selectedWorkers >= 4 && (totalMemoryMb < 12_000 || freeMemoryMb < 1_000);
+      checks.push({
+        id: `host-${host.id}`,
+        label: `${host.name} capacity`,
+        detail: constrained
+          ? `${selectedWorkers} workers share ${Math.round(totalMemoryMb / 1024)} GB RAM with ${Math.round(freeMemoryMb / 1024)} GB free. Close other apps or use three workers.`
+          : `${selectedWorkers} selected worker${selectedWorkers === 1 ? "" : "s"}; ${Math.round(freeMemoryMb / 1024)} GB RAM currently free.`,
+        status: constrained ? "warn" : "pass",
+      });
+    }
+    return checks;
+  })();
+  const failedPreflightChecks = preflightChecks.filter((check) => check.status === "fail").length;
+  const warningPreflightChecks = preflightChecks.filter((check) => check.status === "warn").length;
 
   const post = async (payload: Record<string, unknown>) => {
     const response = await fetch("/api/control", {
@@ -490,6 +592,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   };
 
   const launchRun = async () => {
+    setPreflightRanAt(state.serverTime);
     if (!selected.length) {
       setNotice("Select at least one online device first.");
       return;
@@ -631,7 +734,90 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
   };
 
+  const launchSingleProfileWorker = async (worker: Device) => {
+    if (!worker.online || worker.approvalStatus !== "approved") {
+      setNotice(`${worker.name} is offline or awaiting approval.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "launch-workers", deviceIds: [worker.id] });
+      setNotice(`${worker.name}'s isolated Chrome window is opening.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetProfileWorkers = async (host: ProfileHostGroup, worker?: Device) => {
+    const targets = worker ? [worker] : host.workers;
+    const targetLabel = worker?.name ?? `all ${host.name} workers`;
+    if (!window.confirm(`Reset ${targetLabel}? This clears local one-shot locks and stops any active run.`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "reset-devices", deviceIds: targets.map((target) => target.id) });
+      setNotice(`Reset sent to ${targetLabel}.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshProfileHost = async (host: ProfileHostGroup) => {
+    const representative = host.workers.find((worker) => worker.online && worker.approvalStatus === "approved");
+    if (!representative) {
+      setNotice(`${host.name}'s bridge is offline, so it cannot receive a remote refresh. Start the profile-host service locally.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "refresh-profile-host", deviceId: representative.id });
+      setNotice(`${host.name} is refreshing every controller channel and clock sample.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSystemCheck = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await refresh();
+      setPreflightRanAt(state.serverTime);
+      setNotice("System check refreshed. Review the pass, warning and fix-required results below.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleConfigurationLock = () => {
+    if (configurationLocked) {
+      if (!window.confirm("Unlock the event configuration? This allows the URL, password, time and fleet assignment to change.")) return;
+      setConfigurationLocked(false);
+      setNotice("Event configuration unlocked.");
+      return;
+    }
+    setConfigurationLocked(true);
+    setNotice("Event configuration locked for the current dashboard session.");
+  };
+
   const selectHostForOperations = (host: ProfileHostGroup) => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
     const workerIds = host.workers
       .filter((worker) => worker.online && worker.approvalStatus === "approved")
       .map((worker) => worker.id);
@@ -645,6 +831,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   };
 
   const toggleDevice = (id: string) => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
     if (!selected.includes(id) && selected.length >= 20) {
       setNotice("The classroom fleet is capped at 20 selected devices.");
       return;
@@ -655,6 +845,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   };
 
   const selectOnlineDevices = () => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
     const next = onlineDevices
       .filter((device) => device.approvalStatus === "approved")
       .slice(0, 20)
@@ -668,6 +862,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   };
 
   const selectReadyDevices = () => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
     const next = state.devices
       .filter((device) => !readinessIssue(device, eventUrl, eventTitle))
       .slice(0, 20)
@@ -691,7 +889,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
             <span className="grid h-9 w-9 place-items-center rounded-lg bg-[#b8ff5a] font-mono text-sm font-black text-[#172018]">AB</span>
             <div>
               <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#aab4a9]">Owned-event test system</p>
-              <h1 className="text-lg font-semibold tracking-tight">AUTOBOT Command Center</h1>
+              <h1 className="text-lg font-semibold tracking-tight">AUTOBOT Profile Host Beta</h1>
             </div>
           </div>
           <div className="flex items-center gap-3 text-xs">
@@ -754,6 +952,15 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         </div>
       )}
 
+      <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#c9d4c4] bg-white px-4 py-3 text-sm text-[#4f5b51]">
+          <span>This is the isolated v0.13 acceptance dashboard. The working v0.12.2 system remains untouched.</span>
+          <a href="https://autobot-command-center.avgschnook.chatgpt.site" target="_blank" rel="noreferrer" className="rounded-full border border-[#cbd2c7] px-3 py-1.5 text-xs font-bold text-[#344132]">
+            Open production fallback
+          </a>
+        </div>
+      </div>
+
       {outdatedDevices.length > 0 ? (
         <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
@@ -776,22 +983,25 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
+              disabled={configurationLocked}
               onClick={selectReadyDevices}
-              className="rounded-full bg-[#172018] px-3 py-2 text-xs font-bold text-white"
+              className="rounded-full bg-[#172018] px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               Select ready
             </button>
             <button
               type="button"
+              disabled={configurationLocked}
               onClick={selectOnlineDevices}
-              className="rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
+              className="rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f] disabled:cursor-not-allowed disabled:opacity-40"
             >
               Select online
             </button>
             <button
               type="button"
+              disabled={configurationLocked}
               onClick={() => setSelected([])}
-              className="col-span-2 rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f]"
+              className="col-span-2 rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f] disabled:cursor-not-allowed disabled:opacity-40"
             >
               Clear
             </button>
@@ -952,24 +1162,38 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   </p>
                 </div>
                 <div className="flex rounded-full border border-[#cbd2c7] bg-[#f3f5ef] p-1 text-xs font-bold">
-                  <button onClick={() => setMode("inspection")} className={`rounded-full px-3 py-1.5 ${mode === "inspection" ? "bg-white shadow-sm" : "text-[#69736b]"}`}>Rehearsal</button>
-                  <button onClick={() => setMode("live")} className={`rounded-full px-3 py-1.5 ${mode === "live" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}>Live test</button>
+                  <button disabled={configurationLocked} onClick={() => setMode("inspection")} className={`rounded-full px-3 py-1.5 disabled:opacity-40 ${mode === "inspection" ? "bg-white shadow-sm" : "text-[#69736b]"}`}>Rehearsal</button>
+                  <button disabled={configurationLocked} onClick={() => setMode("live")} className={`rounded-full px-3 py-1.5 disabled:opacity-40 ${mode === "live" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}>Live test</button>
                 </div>
+              </div>
+
+              <div className={`mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 ${configurationLocked ? "border-[#98b874] bg-[#f4ffe8]" : "border-[#d7dcd3] bg-[#f7f9f4]"}`}>
+                <div>
+                  <p className="text-sm font-semibold">{configurationLocked ? "Event configuration locked" : "Event-day configuration lock"}</p>
+                  <p className="mt-1 text-xs leading-5 text-[#69736b]">
+                    {configurationLocked
+                      ? "URL, title, password, release time, slot split and device selection cannot change until you unlock them."
+                      : "Lock the final setup after review to prevent accidental edits while the fleet is preparing."}
+                  </p>
+                </div>
+                <button type="button" disabled={busy || Boolean(activeRun)} onClick={toggleConfigurationLock} className="rounded-full border border-[#98a790] bg-white px-4 py-2 text-xs font-bold text-[#344132] disabled:opacity-40">
+                  {configurationLocked ? "Unlock configuration" : "Lock configuration"}
+                </button>
               </div>
 
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
                 <label className="field sm:col-span-2">
                   <span>Organizer-owned POSH event URL</span>
-                  <input value={eventUrl} onChange={(event) => setEventUrl(event.target.value)} placeholder="https://posh.vip/e/your-test-event" />
+                  <input disabled={configurationLocked} value={eventUrl} onChange={(event) => setEventUrl(event.target.value)} placeholder="https://posh.vip/e/your-test-event" />
                 </label>
                 <label className="field sm:col-span-2">
                   <span>Exact event title</span>
-                  <input value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} placeholder="Exact title shown on the event page" />
+                  <input disabled={configurationLocked} value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} placeholder="Exact title shown on the event page" />
                 </label>
                 <div className="flex flex-wrap gap-2 sm:col-span-2">
                   <button
                     type="button"
-                    disabled={busy || Boolean(activeRun) || selected.length === 0}
+                    disabled={busy || configurationLocked || Boolean(activeRun) || selected.length === 0}
                     onClick={openEventOnSelected}
                     className="rounded-full bg-[#b8ff5a] px-4 py-2 text-xs font-bold text-[#172018] disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -977,15 +1201,17 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   </button>
                   <button
                     type="button"
+                    disabled={configurationLocked}
                     onClick={useOpenEvent}
-                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f]"
+                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40"
                   >
                     Use event open on selected devices
                   </button>
                   <button
                     type="button"
+                    disabled={configurationLocked}
                     onClick={saveEventDetails}
-                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f]"
+                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40"
                   >
                     Save event details
                   </button>
@@ -997,6 +1223,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   <span>Event password (optional)</span>
                   <input
                     type="password"
+                    disabled={configurationLocked}
                     autoComplete="off"
                     maxLength={160}
                     value={eventPassword}
@@ -1009,12 +1236,12 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 </label>
                 <label className={`field ${mode === "live" ? "sm:col-span-2" : ""}`}>
                   <span>Release time</span>
-                  <input type="datetime-local" value={releaseAt} onChange={(event) => setReleaseAt(event.target.value)} />
+                  <input disabled={configurationLocked} type="datetime-local" value={releaseAt} onChange={(event) => setReleaseAt(event.target.value)} />
                 </label>
                 {mode === "inspection" ? (
                   <label className="field">
                     <span>Ticket strategy</span>
-                    <select value={ticketStrategy} onChange={(event) => setTicketStrategy(event.target.value as typeof ticketStrategy)}>
+                    <select disabled={configurationLocked} value={ticketStrategy} onChange={(event) => setTicketStrategy(event.target.value as typeof ticketStrategy)}>
                       <option value="any">Any available free RSVP</option>
                       <option value="first">First available free RSVP</option>
                       <option value="second">Second available free RSVP</option>
@@ -1030,6 +1257,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                     </div>
                     <input
                       type="range"
+                      disabled={configurationLocked}
                       min={0}
                       max={100}
                       step={1}
@@ -1065,14 +1293,14 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   <>
                     <label className="field sm:col-span-2">
                       <span>Type the exact event title to confirm</span>
-                      <input value={liveConfirmation} onChange={(event) => setLiveConfirmation(event.target.value)} />
+                      <input disabled={configurationLocked} value={liveConfirmation} onChange={(event) => setLiveConfirmation(event.target.value)} />
                     </label>
                     <label className="check-card">
-                      <input type="checkbox" checked={organizerOwned} onChange={(event) => setOrganizerOwned(event.target.checked)} />
+                      <input disabled={configurationLocked} type="checkbox" checked={organizerOwned} onChange={(event) => setOrganizerOwned(event.target.checked)} />
                       <span>This private test event is organizer-owned.</span>
                     </label>
                     <label className="check-card">
-                      <input type="checkbox" checked={permissionConfirmed} onChange={(event) => setPermissionConfirmed(event.target.checked)} />
+                      <input disabled={configurationLocked} type="checkbox" checked={permissionConfirmed} onChange={(event) => setPermissionConfirmed(event.target.checked)} />
                       <span>Written permission for this controlled test is recorded.</span>
                     </label>
                   </>
@@ -1086,6 +1314,35 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                     ? "Rehearsal checks every selected laptop without changing ticket quantity or submitting checkout."
                     : `${selected.length || "No"} selected device${selected.length === 1 ? "" : "s"} = ${selected.length || "no"} planned reservation${selected.length === 1 ? "" : "s"}. Each account can submit at most once; no device receives a replacement lease.`}
                 </p>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-[#d7dcd3] bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">Automatic system check</p>
+                    <p className="mt-1 text-xs text-[#69736b]">
+                      {preflightRanAt
+                        ? `Last checked ${new Date(preflightRanAt).toLocaleTimeString()} · ${failedPreflightChecks} failed · ${warningPreflightChecks} warnings`
+                        : "Refreshes fleet state and checks the event, authorization, clocks, pages and host capacity."}
+                    </p>
+                  </div>
+                  <button type="button" disabled={busy} onClick={runSystemCheck} className="rounded-full bg-[#172018] px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
+                    {busy ? "Checking…" : "Run system check"}
+                  </button>
+                </div>
+                {preflightRanAt ? (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    {preflightChecks.map((check) => (
+                      <div key={check.id} className={`rounded-lg border p-3 ${check.status === "pass" ? "border-[#c9dbb6] bg-[#f7ffef]" : check.status === "warn" ? "border-[#ead0a9] bg-[#fff9ef]" : "border-[#e6bfb4] bg-[#fff4f1]"}`}>
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2 w-2 rounded-full ${check.status === "pass" ? "bg-[#6d9d38]" : check.status === "warn" ? "bg-[#c88935]" : "bg-[#bd624b]"}`} />
+                          <p className="text-xs font-bold">{check.label}</p>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-4 text-[#69736b]">{check.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               {mode === "live" && selected.length > 0 && (
@@ -1238,7 +1495,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                     <li>Run the Multi-Profile Host setup file once on the physical computer.</li>
                     <li>Load each numbered extension into its matching Chrome window, sign into POSH, and approve the workers here.</li>
                   </ol>
-                  <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="mt-5 inline-flex rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white">
+                  <a href={PROFILE_HOST_RELEASE_URL} target="_blank" rel="noreferrer" className="mt-5 inline-flex rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white">
                     Download profile-host release
                   </a>
                 </div>
@@ -1254,6 +1511,17 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   const sampleResources = host.workers.find(
                     (worker) => worker.state.hostResources && typeof worker.state.hostResources === "object",
                   )?.state.hostResources as Record<string, unknown> | undefined;
+                  const lastCheckInAt = Math.max(...host.workers.map((worker) => worker.lastSeenAt || 0));
+                  const clockOffsets = host.workers
+                    .map((worker) => Math.abs(Number(worker.state.clockOffsetMs ?? 0)))
+                    .filter(Number.isFinite);
+                  const roundTrips = host.workers
+                    .map((worker) => Number(worker.state.clockRoundTripMs ?? 0))
+                    .filter(Number.isFinite);
+                  const memoryConstrained = Boolean(
+                    sampleResources && host.workers.length >= 4 &&
+                    (Number(sampleResources.totalMemoryMb || 0) < 12_000 || Number(sampleResources.freeMemoryMb || 0) < 1_000),
+                  );
                   return (
                     <div key={host.id} className="rounded-2xl border border-[#d7dcd3] bg-[#fbfcfa] p-4 sm:p-5">
                       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -1270,6 +1538,14 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                               {Number(sampleResources.cpuCount || 0)} CPU threads · {Math.round(Number(sampleResources.freeMemoryMb || 0) / 1024)} GB free of {Math.round(Number(sampleResources.totalMemoryMb || 0) / 1024)} GB
                             </p>
                           ) : null}
+                          <p className="mt-1 font-mono text-xs text-[#7a837b]">
+                            Last check-in {lastCheckInAt ? new Date(lastCheckInAt).toLocaleTimeString() : "never"} · max clock offset {Math.round(Math.max(0, ...clockOffsets))}ms · max latency {Math.round(Math.max(0, ...roundTrips))}ms
+                          </p>
+                          {memoryConstrained ? (
+                            <p className="mt-2 rounded-lg bg-[#fff0d9] px-3 py-2 text-xs font-semibold text-[#79501f]">
+                              Four workers may strain this host. Close other apps or select three workers for a faster release.
+                            </p>
+                          ) : null}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <button type="button" disabled={busy || Boolean(activeRun)} onClick={() => launchProfileWorkers(host)} className="rounded-full bg-[#b8ff5a] px-4 py-2 text-xs font-bold text-[#172018] disabled:opacity-40">
@@ -1277,6 +1553,12 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                           </button>
                           <button type="button" onClick={() => selectHostForOperations(host)} className="rounded-full border border-[#cbd2c7] bg-white px-4 py-2 text-xs font-bold text-[#4d594f]">
                             Select for operations
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => refreshProfileHost(host)} className="rounded-full border border-[#cbd2c7] bg-white px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40">
+                            Refresh bridge
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => resetProfileWorkers(host)} className="rounded-full border border-[#d7a797] bg-white px-4 py-2 text-xs font-bold text-[#8b4f3f] disabled:opacity-40">
+                            Reset host workers
                           </button>
                         </div>
                       </div>
@@ -1305,6 +1587,20 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                                   <span className="rounded-full bg-[#fff0d9] px-2 py-1 text-[#79501f]">Approve in Operations</span>
                                 ) : null}
                               </div>
+                              <p className="mt-2 text-[11px] leading-4 text-[#69736b]">
+                                {worker.lastSeenAt ? `Checked in ${new Date(worker.lastSeenAt).toLocaleTimeString()}` : "Never checked in"}
+                                {typeof worker.state.latestMessage === "string" && worker.state.latestMessage
+                                  ? ` · ${worker.state.latestMessage}`
+                                  : ""}
+                              </p>
+                              <div className="mt-3 flex gap-2">
+                                <button type="button" disabled={busy || Boolean(activeRun) || !worker.online || worker.approvalStatus !== "approved"} onClick={() => launchSingleProfileWorker(worker)} className="rounded-full bg-[#172018] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-35">
+                                  Launch
+                                </button>
+                                <button type="button" disabled={busy || worker.approvalStatus !== "approved"} onClick={() => resetProfileWorkers(host, worker)} className="rounded-full border border-[#d7a797] px-3 py-1.5 text-[11px] font-bold text-[#8b4f3f] disabled:opacity-35">
+                                  Reset
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
@@ -1331,6 +1627,16 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
               <p className="mt-2 text-sm leading-6 text-[#69736b]">
                 Chrome requires each unpacked extension to be loaded once in its matching profile. POSH login, OTP and CAPTCHA also remain manual. After that, the profile cookies and worker identity persist across launches.
               </p>
+            </div>
+            <div className="rounded-2xl border border-[#d7dcd3] bg-white p-5">
+              <h3 className="font-semibold">Two-profile acceptance check</h3>
+              <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-6 text-[#69736b]">
+                <li>Start with two workers and sign each into a separate approved test account.</li>
+                <li>Run the automatic system check until there are no failures.</li>
+                <li>Run Rehearsal and confirm both profiles pass independently.</li>
+                <li>Reset both workers, repeat the rehearsal, then test the one-click launch after closing Chrome.</li>
+              </ol>
+              <p className="mt-3 text-xs leading-5 text-[#7a837b]">Only move to three or four profiles on this host after the two-profile check is clean.</p>
             </div>
           </aside>
         </div>

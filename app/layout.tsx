@@ -13,17 +13,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://autobot-command-center.avgschnook.chatgpt.site"),
-  title: "AUTOBOT Command Center",
-  description: "Optional multi-device orchestration for the AUTOBOT owned-event RSVP lab.",
+  metadataBase: new URL("https://autobot-profile-host-beta.avgschnook.chatgpt.site"),
+  title: "AUTOBOT Profile Host Beta",
+  description: "Isolated multi-profile acceptance dashboard for the AUTOBOT owned-event RSVP lab.",
   openGraph: {
-    title: "AUTOBOT Command Center",
+    title: "AUTOBOT Profile Host Beta",
     description: "One panel. Independent devices. Exactly one live lease.",
     images: [{ url: "/og.png", width: 1731, height: 909, alt: "AUTOBOT Command Center device network" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "AUTOBOT Command Center",
+    title: "AUTOBOT Profile Host Beta",
     description: "One panel. Independent devices. Exactly one live lease.",
     images: ["/og.png"],
   },
