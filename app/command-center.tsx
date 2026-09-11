@@ -1,0 +1,1731 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { singleFlight, startDashboardPolling } from "./dashboard-polling";
+
+type Device = {
+  id: string;
+  name: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  description: string | null;
+  version: string;
+  mode: "local" | "managed";
+  approvalStatus: "pending" | "approved";
+  state: Record<string, unknown>;
+  encryptionPublicKey: string | null;
+  encryptionReady: boolean;
+  lastSeenAt: number | null;
+  online: boolean;
+};
+
+type Run = {
+  id: string;
+  title: string;
+  eventUrl: string;
+  eventTitle: string;
+  releaseAt: number;
+  ticketStrategy: "any" | "first" | "second";
+  mode: "inspection" | "live";
+  status: string;
+  organizerOwned: boolean;
+  permissionConfirmed: boolean;
+  updatedAt: number;
+};
+
+type AuditEvent = {
+  id: string;
+  run_id?: string | null;
+  device_id?: string | null;
+  source: string;
+  action: string;
+  detail: Record<string, unknown>;
+  created_at: number;
+};
+
+type RunDevice = {
+  run_id: string;
+  device_id: string;
+  device_name: string;
+  role: "executor" | "inspection";
+  ticket_strategy: "any" | "first" | "second";
+  status: string;
+  updated_at: number;
+};
+
+type ControlState = {
+  devices: Device[];
+  runs: Run[];
+  leases: Array<Record<string, unknown>>;
+  runDevices: RunDevice[];
+  events: AuditEvent[];
+  serverTime: number;
+};
+
+type ProfileHostGroup = {
+  id: string;
+  name: string;
+  workers: Device[];
+};
+
+type PreflightCheck = {
+  id: string;
+  label: string;
+  detail: string;
+  status: "pass" | "warn" | "fail";
+};
+
+const emptyState: ControlState = {
+  devices: [],
+  runs: [],
+  leases: [],
+  runDevices: [],
+  events: [],
+  serverTime: Date.now(),
+};
+
+const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
+const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/latest";
+const PROFILE_HOST_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/tag/v0.13.0-beta";
+
+function versionAtLeast(version: string, required: [number, number, number]) {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) return false;
+  const current = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < required.length; index += 1) {
+    if (current[index]! > required[index]!) return true;
+    if (current[index]! < required[index]!) return false;
+  }
+  return true;
+}
+
+function supportsFastRelease(version: string) {
+  return versionAtLeast(version, [0, 12, 2]);
+}
+
+function sameEventPage(left: unknown, right: string) {
+  if (typeof left !== "string") return false;
+  try {
+    const leftUrl = new URL(left);
+    const rightUrl = new URL(right);
+    return leftUrl.hostname === rightUrl.hostname && leftUrl.pathname === rightUrl.pathname;
+  } catch {
+    return false;
+  }
+}
+
+function validEventUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" && url.hostname === "posh.vip" && url.pathname.startsWith("/e/")) ||
+      (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
+  if (device.approvalStatus !== "approved") return "Waiting for approval";
+  if (!device.online) return "Offline";
+  if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
+  if (!supportsFastRelease(device.version)) return "Update to v0.12.2";
+  if (!device.encryptionReady) return "Password security not ready";
+  if (device.state.pageReady !== true) return "Open the event page";
+  if (device.state.pageVisible !== true) return "Bring the event tab to the front";
+  if (!sameEventPage(device.state.eventUrl, eventUrl)) return "Wrong event page";
+  if (
+    typeof device.state.eventTitle !== "string" ||
+    device.state.eventTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase() !==
+      eventTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase()
+  ) {
+    return "Wrong event title";
+  }
+  return null;
+}
+
+async function encryptEventPassword(password: string, publicKeyPem: string): Promise<string> {
+  const encodedKey = publicKeyPem
+    .replace("-----BEGIN PUBLIC KEY-----", "")
+    .replace("-----END PUBLIC KEY-----", "")
+    .replace(/\s/g, "");
+  const keyBytes = Uint8Array.from(atob(encodedKey), (character) => character.charCodeAt(0));
+  const publicKey = await crypto.subtle.importKey(
+    "spki",
+    keyBytes,
+    { name: "RSA-OAEP", hash: "SHA-256" },
+    false,
+    ["encrypt"],
+  );
+  const encodedPassword = new TextEncoder().encode(password);
+  if (encodedPassword.byteLength > 190) {
+    throw new Error("The event password is too long for secure device delivery.");
+  }
+  const encrypted = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, encodedPassword),
+  );
+  return btoa(String.fromCharCode(...encrypted))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function deviceSummary(device: Device) {
+  if (device.approvalStatus !== "approved") return "Approval needed";
+  const pageReady = device.state.pageReady === true;
+  const armed = device.state.armed === true;
+  const prepared = device.state.prepared === true;
+  if (!device.online) return "Offline";
+  if (prepared) return "Prepared";
+  if (armed) return "Armed";
+  if (pageReady) return "Event ready";
+  return "Bridge online";
+}
+
+export function CommandCenter({ operatorName }: { operatorName: string }) {
+  const [state, setState] = useState<ControlState>(emptyState);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<"operations" | "hosts" | "directory">("operations");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [profileDrafts, setProfileDrafts] = useState<
+    Record<string, { contactEmail: string; contactPhone: string; description: string }>
+  >({});
+  const [pairLabel, setPairLabel] = useState("Classroom fleet");
+  const [enrollmentMax, setEnrollmentMax] = useState(20);
+  const [pairing, setPairing] = useState<{
+    code: string;
+    expiresAt: number;
+    kind: "enrollment" | "single";
+    maxDevices: number;
+  } | null>(null);
+  const [mode, setMode] = useState<"inspection" | "live">("inspection");
+  const [eventUrl, setEventUrl] = useState("");
+  const [eventTitle, setEventTitle] = useState("");
+  const [eventPassword, setEventPassword] = useState("");
+  const [releaseAt, setReleaseAt] = useState("");
+  const [ticketStrategy, setTicketStrategy] = useState<"any" | "first" | "second">("any");
+  const [firstSlotPercent, setFirstSlotPercent] = useState(50);
+  const [organizerOwned, setOrganizerOwned] = useState(false);
+  const [permissionConfirmed, setPermissionConfirmed] = useState(false);
+  const [liveConfirmation, setLiveConfirmation] = useState("");
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [configurationLocked, setConfigurationLocked] = useState(false);
+  const [preflightRanAt, setPreflightRanAt] = useState<number | null>(null);
+
+  const refreshState = useCallback(async () => {
+    const response = await fetch("/api/control", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      return;
+    }
+    if (!response.ok) throw new Error("The controller state could not be loaded.");
+    const next = (await response.json()) as ControlState;
+    setClockOffsetMs(Date.now() - next.serverTime);
+    setState(next);
+    setProfileDrafts((current) => {
+      const merged = { ...current };
+      for (const device of next.devices) {
+        if (!merged[device.id]) {
+          merged[device.id] = {
+            contactEmail: device.contactEmail ?? "",
+            contactPhone: device.contactPhone ?? "",
+            description: device.description ?? "",
+          };
+        }
+      }
+      return merged;
+    });
+    setSelected((current) => current.filter((id) => next.devices.some((device) => device.id === id && device.online)));
+    setLoading(false);
+  }, []);
+  const refresh = useMemo(() => singleFlight(refreshState), [refreshState]);
+
+  useEffect(() => {
+    return startDashboardPolling(refresh, document, window, (error) => {
+      setNotice(error instanceof Error ? error.message : String(error));
+      setLoading(false);
+    });
+  }, [refresh]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(EVENT_PROFILE_KEY) || "null") as {
+          eventUrl?: string;
+          eventTitle?: string;
+          ticketStrategy?: "any" | "first" | "second";
+          firstSlotPercent?: number;
+        } | null;
+        if (saved?.eventUrl) setEventUrl(saved.eventUrl);
+        if (saved?.eventTitle) setEventTitle(saved.eventTitle);
+        if (saved?.ticketStrategy) setTicketStrategy(saved.ticketStrategy);
+        if (Number.isFinite(saved?.firstSlotPercent)) {
+          setFirstSlotPercent(Math.min(100, Math.max(0, Number(saved?.firstSlotPercent))));
+        }
+      } catch {
+        // Ignore invalid device-local preferences.
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const activeRun = state.runs.find((run) => ["draft", "armed", "blocked"].includes(run.status));
+  const latestRun = activeRun ?? state.runs[0];
+  const onlineDevices = state.devices.filter((device) => device.online);
+  const pendingDevices = state.devices.filter((device) => device.approvalStatus === "pending");
+  const outdatedDevices = state.devices.filter((device) => !supportsFastRelease(device.version));
+  const profileWorkers = state.devices.filter((device) => device.state.profileMode === "multi");
+  const profileHostGroups = [...profileWorkers.reduce((groups, worker) => {
+    const hostId = typeof worker.state.hostId === "string" ? worker.state.hostId : "unknown-host";
+    const hostName = typeof worker.state.hostName === "string" ? worker.state.hostName : "Profile host";
+    const current = groups.get(hostId) ?? { id: hostId, name: hostName, workers: [] };
+    current.workers.push(worker);
+    current.workers.sort(
+      (left, right) => Number(left.state.workerIndex ?? 0) - Number(right.state.workerIndex ?? 0),
+    );
+    groups.set(hostId, current);
+    return groups;
+  }, new Map<string, ProfileHostGroup>()).values()];
+  const activeLeases = state.leases.filter((lease) => ["offered", "active"].includes(String(lease.status)));
+  const selectedIdSet = new Set(selected);
+  const selectedDevices = selected
+    .map((deviceId) => state.devices.find((device) => device.id === deviceId))
+    .filter((device): device is Device => Boolean(device));
+  const firstSlotCount = Math.round((selectedDevices.length * firstSlotPercent) / 100);
+  const secondSlotCount = selectedDevices.length - firstSlotCount;
+  const firstSlotDevices = selectedDevices.slice(0, firstSlotCount);
+  const secondSlotDevices = selectedDevices.slice(firstSlotCount);
+  const readySelectedDevices = selectedDevices.filter((device) => !readinessIssue(device, eventUrl, eventTitle));
+  const preparedSelectedDevices = selectedDevices.filter((device) => device.state.prepared === true);
+  const latestRunDevices = latestRun
+    ? state.runDevices.filter((device) => device.run_id === latestRun.id)
+    : [];
+  const latestRunStatusByDevice = new Map(
+    latestRunDevices.map((device) => [device.device_id, device.status]),
+  );
+  const latestConfirmed = latestRunDevices.filter((device) =>
+    latestRun?.mode === "inspection"
+      ? device.status === "inspection-complete"
+      : device.status === "confirmed",
+  ).length;
+  const latestNeedsReview = latestRunDevices.filter((device) =>
+    ["submitted", "submitted-unconfirmed"].includes(device.status),
+  ).length;
+  const latestIssues = latestRunDevices.filter((device) =>
+    ["already-reserved", "failed", "local-override", "stopped"].includes(device.status),
+  ).length;
+  const latestInProgress = Math.max(
+    0,
+    latestRunDevices.length - latestConfirmed - latestNeedsReview - latestIssues,
+  );
+  const selectedProfileHosts = profileHostGroups.filter((host) =>
+    host.workers.some((worker) => selectedIdSet.has(worker.id)),
+  );
+  const preflightChecks: PreflightCheck[] = (() => {
+    const checks: PreflightCheck[] = [
+      {
+        id: "selection",
+        label: "Fleet selected",
+        detail: selected.length ? `${selected.length} device${selected.length === 1 ? "" : "s"} selected.` : "Select at least one device.",
+        status: selected.length ? "pass" : "fail",
+      },
+      {
+        id: "event-url",
+        label: "Event URL",
+        detail: validEventUrl(eventUrl) ? "Organizer-owned event URL is valid." : "Enter a valid POSH /e/ event URL.",
+        status: validEventUrl(eventUrl) ? "pass" : "fail",
+      },
+      {
+        id: "event-title",
+        label: "Exact event title",
+        detail: eventTitle.trim() ? "Event title is set." : "Enter the exact title shown on the event page.",
+        status: eventTitle.trim() ? "pass" : "fail",
+      },
+    ];
+    if (mode === "live") {
+      const releaseTimestamp = releaseAt ? new Date(releaseAt).getTime() : Number.NaN;
+      checks.push({
+        id: "release-time",
+        label: "Release time",
+        detail: Number.isFinite(releaseTimestamp) && releaseTimestamp > state.serverTime
+          ? `Scheduled for ${new Date(releaseTimestamp).toLocaleString()}.`
+          : "Choose a release time in the future.",
+        status: Number.isFinite(releaseTimestamp) && releaseTimestamp > state.serverTime ? "pass" : "fail",
+      });
+      checks.push({
+        id: "authorization",
+        label: "Test authorization",
+        detail: organizerOwned && permissionConfirmed && liveConfirmation.trim() === eventTitle.trim()
+          ? "Ownership, permission and title confirmation are complete."
+          : "Confirm ownership, permission and type the exact event title.",
+        status: organizerOwned && permissionConfirmed && liveConfirmation.trim() === eventTitle.trim() ? "pass" : "fail",
+      });
+    }
+    for (const device of selectedDevices) {
+      const issue = readinessIssue(device, eventUrl, eventTitle);
+      const deviceClockOffset = Math.abs(Number(device.state.clockOffsetMs ?? 0));
+      const deviceRoundTrip = Number(device.state.clockRoundTripMs ?? 0);
+      checks.push({
+        id: `device-${device.id}`,
+        label: device.name,
+        detail: issue || (deviceClockOffset > 750
+          ? `Ready, but its clock differs by ${Math.round(deviceClockOffset)}ms.`
+          : deviceRoundTrip > 1_000
+            ? `Ready, but controller latency is ${Math.round(deviceRoundTrip)}ms.`
+            : "Online, current, encrypted and on the correct visible event page."),
+        status: issue ? "fail" : deviceClockOffset > 750 || deviceRoundTrip > 1_000 ? "warn" : "pass",
+      });
+    }
+    for (const host of selectedProfileHosts) {
+      const resources = host.workers.find(
+        (worker) => worker.state.hostResources && typeof worker.state.hostResources === "object",
+      )?.state.hostResources as Record<string, unknown> | undefined;
+      if (!resources) continue;
+      const totalMemoryMb = Number(resources.totalMemoryMb || 0);
+      const freeMemoryMb = Number(resources.freeMemoryMb || 0);
+      const selectedWorkers = host.workers.filter((worker) => selectedIdSet.has(worker.id)).length;
+      const constrained = selectedWorkers >= 4 && (totalMemoryMb < 12_000 || freeMemoryMb < 1_000);
+      checks.push({
+        id: `host-${host.id}`,
+        label: `${host.name} capacity`,
+        detail: constrained
+          ? `${selectedWorkers} workers share ${Math.round(totalMemoryMb / 1024)} GB RAM with ${Math.round(freeMemoryMb / 1024)} GB free. Close other apps or use three workers.`
+          : `${selectedWorkers} selected worker${selectedWorkers === 1 ? "" : "s"}; ${Math.round(freeMemoryMb / 1024)} GB RAM currently free.`,
+        status: constrained ? "warn" : "pass",
+      });
+    }
+    return checks;
+  })();
+  const failedPreflightChecks = preflightChecks.filter((check) => check.status === "fail").length;
+  const warningPreflightChecks = preflightChecks.filter((check) => check.status === "warn").length;
+
+  const post = async (payload: Record<string, unknown>) => {
+    const response = await fetch("/api/control", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      throw new Error("Your dashboard session expired.");
+    }
+    const result = (await response.json()) as { error?: string; [key: string]: unknown };
+    if (!response.ok) throw new Error(result.error || "The controller rejected the request.");
+    return result;
+  };
+
+  const createPairing = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({ action: "create-pairing", label: pairLabel });
+      setPairing({
+        code: String(result.code),
+        expiresAt: Number(result.expiresAt),
+        kind: "single",
+        maxDevices: 1,
+      });
+      setNotice("Pairing code created. It can be used once during the next ten minutes.");
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createEnrollment = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({
+        action: "create-enrollment",
+        label: pairLabel,
+        maxDevices: enrollmentMax,
+      });
+      setPairing({
+        code: String(result.code),
+        expiresAt: Number(result.expiresAt),
+        kind: "enrollment",
+        maxDevices: Number(result.maxDevices),
+      });
+      setNotice("48-hour enrollment started. Approve each laptop after it appears below.");
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveDevice = async (device: Device) => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "approve-device", deviceId: device.id });
+      setNotice(`${device.name} is approved for fleet control.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copySetupCommand = async () => {
+    if (!pairing) return;
+    const command = `npm run device:pair -- --controller=${window.location.origin} --code=${pairing.code} --name="Laptop 01"`;
+    try {
+      await navigator.clipboard.writeText(command);
+      setNotice("Setup command copied. Change Laptop 01 to that computer's label before running it.");
+    } catch {
+      setNotice(command);
+    }
+  };
+
+  const removeDevice = async (device: Device) => {
+    if (!window.confirm(`Remove ${device.name} from this controller? Its saved pairing will stop working.`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "remove-device", deviceId: device.id });
+      setSelected((current) => current.filter((id) => id !== device.id));
+      setNotice(`${device.name} was removed. Delete AUTOBOT from that computer before returning it.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useOpenEvent = () => {
+    const candidates = selectedDevices
+      .map((device) => ({
+        url: typeof device.state.eventUrl === "string" ? device.state.eventUrl : "",
+        title: typeof device.state.eventTitle === "string" ? device.state.eventTitle : "",
+      }))
+      .filter((event) => event.url);
+    if (!candidates.length) {
+      setNotice("Select an online device with the POSH event page open first.");
+      return;
+    }
+    if (candidates.some((event) => !sameEventPage(event.url, candidates[0]!.url))) {
+      setNotice("The selected devices are not all on the same event page.");
+      return;
+    }
+    setEventUrl(candidates[0]!.url);
+    if (candidates[0]!.title) setEventTitle(candidates[0]!.title);
+    setNotice(`Captured the open event from ${candidates.length} selected device${candidates.length === 1 ? "" : "s"}.`);
+  };
+
+  const saveEventDetails = () => {
+    try {
+      window.localStorage.setItem(
+        EVENT_PROFILE_KEY,
+        JSON.stringify({ eventUrl, eventTitle, ticketStrategy, firstSlotPercent }),
+      );
+      setNotice("Event details saved in this dashboard browser. Password and release time were not saved.");
+    } catch {
+      setNotice("This browser blocked local event-detail storage. The current form still works for this session.");
+    }
+  };
+
+  const openEventOnSelected = async () => {
+    if (!selected.length) {
+      setNotice("Select at least one online device first. Use Select online to choose the connected fleet.");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({ action: "open-event", eventUrl, deviceIds: selected });
+      const count = Number(result.devices ?? selected.length);
+      setNotice(
+        `Opening this event on ${count} selected device${count === 1 ? "" : "s"}. ` +
+          "Keep Chrome open; sleeping extension workers may take up to 30 seconds to wake.",
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateProfileDraft = (
+    deviceId: string,
+    field: "contactEmail" | "contactPhone" | "description",
+    value: string,
+  ) => {
+    setProfileDrafts((current) => ({
+      ...current,
+      [deviceId]: {
+        contactEmail: current[deviceId]?.contactEmail ?? "",
+        contactPhone: current[deviceId]?.contactPhone ?? "",
+        description: current[deviceId]?.description ?? "",
+        [field]: value,
+      },
+    }));
+  };
+
+  const saveDeviceProfile = async (device: Device) => {
+    const profile = profileDrafts[device.id] ?? {
+      contactEmail: "",
+      contactPhone: "",
+      description: "",
+    };
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "update-device-profile", deviceId: device.id, ...profile });
+      setNotice(`${device.name}'s account details were saved.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const launchRun = async () => {
+    setPreflightRanAt(state.serverTime);
+    if (!selected.length) {
+      setNotice("Select at least one online device first.");
+      return;
+    }
+    if (selected.length > 20) {
+      setNotice("Select no more than 20 devices for this classroom fleet test.");
+      return;
+    }
+    if (mode === "live" && !releaseAt) {
+      setNotice("Set the live release time before activating the fleet.");
+      return;
+    }
+    if (mode === "live" && readySelectedDevices.length !== selectedDevices.length) {
+      const notReady = selectedDevices
+        .filter((device) => readinessIssue(device, eventUrl, eventTitle))
+        .map((device) => `${device.name}: ${readinessIssue(device, eventUrl, eventTitle)}`)
+        .join("; ");
+      setNotice(`Fleet preflight is incomplete. ${notReady}`);
+      return;
+    }
+    if (eventPassword && selectedDevices.some((device) => !device.encryptionPublicKey)) {
+      setNotice("Every selected device must show Password ready. Update and restart the bridge on any device that needs the security update.");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const encryptedSecrets = eventPassword
+        ? Object.fromEntries(
+            await Promise.all(
+              selectedDevices.map(async (device) => [
+                device.id,
+                await encryptEventPassword(eventPassword, device.encryptionPublicKey!),
+              ]),
+            ),
+          )
+        : {};
+      const created = await post({
+        action: "create-run",
+        title: eventTitle,
+        eventUrl,
+        eventTitle,
+        releaseAt: releaseAt ? new Date(releaseAt).getTime() : state.serverTime,
+        ticketStrategy,
+        mode,
+        organizerOwned,
+        permissionConfirmed,
+      });
+      await post({
+        action: "arm-run",
+        runId: created.id,
+        deviceIds: selected,
+        confirmEventTitle: liveConfirmation,
+        encryptedSecrets,
+        ...(mode === "live" ? { firstSlotCount } : {}),
+      });
+      setNotice(
+        mode === "inspection"
+          ? `Rehearsal sent to ${selected.length} device${selected.length === 1 ? "" : "s"}. No RSVP controls will be clicked.`
+          : `Fleet preparation started: ${firstSlotCount} targeting slot 1 and ${secondSlotCount} targeting slot 2. Each laptop will open and hold its assigned ticket selector before the synchronized release.`,
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopAll = async () => {
+    if (!activeRun) {
+      setNotice("There is no active run to stop.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await post({ action: "stop-run", runId: activeRun.id });
+      setNotice("Stop commands queued for every device in the run.");
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetSelectedDevices = async () => {
+    if (!selected.length) {
+      setNotice("Select at least one device to reset.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Reset AUTOBOT on ${selected.length} selected device${selected.length === 1 ? "" : "s"}?\n\n` +
+        "This stops the active run and clears this event's local one-shot locks so the selected devices can be activated again. Only reset after the organizer-owned test tickets have been deleted or relisted.",
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({ action: "reset-devices", deviceIds: selected });
+      const count = Number(result.devices ?? selected.length);
+      setNotice(
+        `Reset sent to ${count} device${count === 1 ? "" : "s"}. ` +
+          "Keep Chrome and the event page open; each device will be ready for another activation.",
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const launchProfileWorkers = async (host: ProfileHostGroup) => {
+    const launchable = host.workers.filter(
+      (worker) => worker.online && worker.approvalStatus === "approved",
+    );
+    if (!launchable.length) {
+      setNotice(`${host.name}'s profile-host service is offline or still awaiting approval.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await post({
+        action: "launch-workers",
+        deviceIds: launchable.map((worker) => worker.id),
+      });
+      const count = Number(result.workers ?? launchable.length);
+      setNotice(
+        `${host.name} is opening ${count} isolated Chrome worker${count === 1 ? "" : "s"}. ` +
+          "They start in sequence to protect computer performance.",
+      );
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const launchSingleProfileWorker = async (worker: Device) => {
+    if (!worker.online || worker.approvalStatus !== "approved") {
+      setNotice(`${worker.name} is offline or awaiting approval.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "launch-workers", deviceIds: [worker.id] });
+      setNotice(`${worker.name}'s isolated Chrome window is opening.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetProfileWorkers = async (host: ProfileHostGroup, worker?: Device) => {
+    const targets = worker ? [worker] : host.workers;
+    const targetLabel = worker?.name ?? `all ${host.name} workers`;
+    if (!window.confirm(`Reset ${targetLabel}? This clears local one-shot locks and stops any active run.`)) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "reset-devices", deviceIds: targets.map((target) => target.id) });
+      setNotice(`Reset sent to ${targetLabel}.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshProfileHost = async (host: ProfileHostGroup) => {
+    const representative = host.workers.find((worker) => worker.online && worker.approvalStatus === "approved");
+    if (!representative) {
+      setNotice(`${host.name}'s bridge is offline, so it cannot receive a remote refresh. Start the profile-host service locally.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "refresh-profile-host", deviceId: representative.id });
+      setNotice(`${host.name} is refreshing every controller channel and clock sample.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSystemCheck = async () => {
+    setBusy(true);
+    setNotice("");
+    try {
+      await refresh();
+      setPreflightRanAt(state.serverTime);
+      setNotice("System check refreshed. Review the pass, warning and fix-required results below.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleConfigurationLock = () => {
+    if (configurationLocked) {
+      if (!window.confirm("Unlock the event configuration? This allows the URL, password, time and fleet assignment to change.")) return;
+      setConfigurationLocked(false);
+      setNotice("Event configuration unlocked.");
+      return;
+    }
+    setConfigurationLocked(true);
+    setNotice("Event configuration locked for the current dashboard session.");
+  };
+
+  const selectHostForOperations = (host: ProfileHostGroup) => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
+    const workerIds = host.workers
+      .filter((worker) => worker.online && worker.approvalStatus === "approved")
+      .map((worker) => worker.id);
+    setSelected(workerIds);
+    setView("operations");
+    setNotice(
+      workerIds.length
+        ? `Selected ${workerIds.length} worker${workerIds.length === 1 ? "" : "s"} from ${host.name}.`
+        : `${host.name} has no approved online workers yet.`,
+    );
+  };
+
+  const toggleDevice = (id: string) => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
+    if (!selected.includes(id) && selected.length >= 20) {
+      setNotice("The classroom fleet is capped at 20 selected devices.");
+      return;
+    }
+    setSelected((current) =>
+      current.includes(id) ? current.filter((deviceId) => deviceId !== id) : [...current, id],
+    );
+  };
+
+  const selectOnlineDevices = () => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
+    const next = onlineDevices
+      .filter((device) => device.approvalStatus === "approved")
+      .slice(0, 20)
+      .map((device) => device.id);
+    setSelected(next);
+    setNotice(
+      next.length
+        ? `Selected ${next.length} online device${next.length === 1 ? "" : "s"}.`
+        : "No devices are online yet.",
+    );
+  };
+
+  const selectReadyDevices = () => {
+    if (configurationLocked) {
+      setNotice("Unlock the event configuration before changing the selected fleet.");
+      return;
+    }
+    const next = state.devices
+      .filter((device) => !readinessIssue(device, eventUrl, eventTitle))
+      .slice(0, 20)
+      .map((device) => device.id);
+    setSelected(next);
+    setNotice(
+      next.length
+        ? `Selected ${next.length} fully ready device${next.length === 1 ? "" : "s"}.`
+        : "No devices currently pass every readiness check.",
+    );
+  };
+
+  const relativeClock =
+    Math.abs(clockOffsetMs) < 1_000 ? "Clock aligned" : `${Math.round(clockOffsetMs)}ms browser offset`;
+
+  return (
+    <main className="min-h-screen bg-[#f3f5ef] text-[#172018]">
+      <header className="border-b border-[#cfd5ca] bg-[#172018] text-[#f7f9f2]">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-4 lg:px-8">
+          <div className="flex items-center gap-3">
+            <span className="grid h-9 w-9 place-items-center rounded-lg bg-[#b8ff5a] font-mono text-sm font-black text-[#172018]">AB</span>
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[#aab4a9]">Owned-event test system</p>
+              <h1 className="text-lg font-semibold tracking-tight">AUTOBOT Profile Host Beta</h1>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            <span className="hidden text-[#aab4a9] sm:block">{relativeClock}</span>
+            <span className="h-2.5 w-2.5 rounded-full bg-[#b8ff5a] shadow-[0_0_0_4px_rgb(184_255_90/12%)]" />
+            <span className="hidden max-w-40 truncate rounded-full border border-[#475149] px-3 py-1.5 font-semibold sm:block">{operatorName}</span>
+            <form action="/api/auth/logout" method="post">
+              <button className="rounded-full border border-[#475149] px-3 py-1.5 font-semibold text-[#dce3dc] transition hover:border-[#718074] hover:text-white" type="submit">
+                Lock
+              </button>
+            </form>
+          </div>
+        </div>
+      </header>
+
+      <section className="border-b border-[#cfd5ca] bg-white">
+        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-4 px-5 py-4 lg:px-8">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#69736b]">Control state</p>
+            <p className="mt-0.5 font-semibold">{activeRun ? `${activeRun.title} · ${activeRun.status}` : "No active run"}</p>
+            <div className="mt-2 flex w-fit rounded-full border border-[#cbd2c7] bg-[#f3f5ef] p-1 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setView("operations")}
+                className={`rounded-full px-3 py-1.5 ${view === "operations" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
+              >
+                Operations
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("hosts")}
+                className={`rounded-full px-3 py-1.5 ${view === "hosts" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
+              >
+                Profile hosts
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("directory")}
+                className={`rounded-full px-3 py-1.5 ${view === "directory" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}
+              >
+                Fleet directory
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+            <span className="rounded-full bg-[#eaf4d9] px-3 py-1.5 text-[#35511e]">{onlineDevices.length} online</span>
+            {pendingDevices.length > 0 ? (
+              <span className="rounded-full bg-[#fff0d9] px-3 py-1.5 text-[#79501f]">{pendingDevices.length} awaiting approval</span>
+            ) : null}
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{selected.length} selected</span>
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{readySelectedDevices.length}/{selected.length} ready</span>
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-[#4f5b51]">{activeLeases.length ? `${activeLeases.length} live lease${activeLeases.length === 1 ? "" : "s"}` : "No live leases"}</span>
+          </div>
+        </div>
+      </section>
+
+      {notice && (
+        <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
+          <div role="status" className="rounded-xl border border-[#b9c7ac] bg-[#f8ffed] px-4 py-3 text-sm text-[#385020]">{notice}</div>
+        </div>
+      )}
+
+      <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#c9d4c4] bg-white px-4 py-3 text-sm text-[#4f5b51]">
+          <span>This is the isolated v0.13 acceptance dashboard. The working v0.12.2 system remains untouched.</span>
+          <a href="https://autobot-command-center.avgschnook.chatgpt.site" target="_blank" rel="noreferrer" className="rounded-full border border-[#cbd2c7] px-3 py-1.5 text-xs font-bold text-[#344132]">
+            Open production fallback
+          </a>
+        </div>
+      </div>
+
+      {outdatedDevices.length > 0 ? (
+        <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
+        <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.12.2 prepared-release update before the next live activation.</span>
+            <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download current release</a>
+          </div>
+        </div>
+      ) : null}
+
+      <div className={`${view === "operations" ? "grid" : "hidden"} mx-auto max-w-[1500px] gap-5 px-5 py-6 lg:grid-cols-[310px_minmax(0,1fr)] lg:px-8`}>
+        <aside className="space-y-4">
+          <div className="flex items-end justify-between">
+            <div>
+              <p className="eyebrow">Fleet</p>
+              <h2 className="mt-1 text-xl font-semibold">Devices</h2>
+            </div>
+            <span className="text-xs font-semibold text-[#69736b]">{loading ? "Loading…" : `${state.devices.length} paired`}</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={configurationLocked}
+              onClick={selectReadyDevices}
+              className="rounded-full bg-[#172018] px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Select ready
+            </button>
+            <button
+              type="button"
+              disabled={configurationLocked}
+              onClick={selectOnlineDevices}
+              className="rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Select online
+            </button>
+            <button
+              type="button"
+              disabled={configurationLocked}
+              onClick={() => setSelected([])}
+              className="col-span-2 rounded-full border border-[#cbd2c7] bg-white px-3 py-2 text-xs font-bold text-[#4d594f] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Clear
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            {state.devices.length === 0 && !loading ? (
+              <div className="rounded-2xl border border-dashed border-[#b8c0b5] bg-white p-5 text-sm leading-6 text-[#657066]">
+                No devices are paired yet. Create a one-time code below, then run the device bridge on that computer.
+              </div>
+            ) : (
+              state.devices.map((device) => {
+                const issue = readinessIssue(device, eventUrl, eventTitle);
+                return (
+                  <div
+                    key={device.id}
+                    className={`overflow-hidden rounded-2xl border bg-white shadow-[0_1px_1px_rgb(23_32_24/3%)] transition ${
+                      selectedIdSet.has(device.id)
+                        ? "border-[#8bae62] ring-2 ring-[#b8ff5a]/35"
+                        : "border-[#d7dcd3]"
+                    } ${device.online ? "" : "opacity-60"}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => device.online && device.approvalStatus === "approved" && toggleDevice(device.id)}
+                      className="w-full p-4 text-left"
+                      aria-pressed={selectedIdSet.has(device.id)}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex gap-3">
+                          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#edf0e9] font-mono text-xs font-black text-[#4a554c]">
+                            {device.name.split(" ").map((part) => part[0]).join("").slice(0, 3)}
+                          </span>
+                          <div>
+                            <h3 className="font-semibold">{device.name}</h3>
+                            <p className="mt-0.5 text-xs text-[#6b746c]">
+                              {device.state.profileMode === "multi"
+                                ? `${String(device.state.hostName || "Profile host")} · Chrome worker`
+                                : device.mode === "managed"
+                                  ? "Controller connected"
+                                  : "Standalone/local"}
+                            </p>
+                          </div>
+                        </div>
+                        <span className={`device-dot ${device.online ? "ready" : "local"}`} />
+                      </div>
+                      <div className="mt-4 flex items-center justify-between border-t border-[#edf0e9] pt-3 text-xs">
+                        <span className="font-mono text-[#6b746c]">{device.version}</span>
+                        <span className="font-semibold text-[#3e493f]">{deviceSummary(device)}</span>
+                      </div>
+                      <p className={`mt-2 text-[11px] font-semibold ${issue ? "text-[#9b5f24]" : "text-[#4d6a31]"}`}>
+                        {issue || "Ready for fleet test"}
+                      </p>
+                    </button>
+                    <div className="flex border-t border-[#edf0e9]">
+                      {device.approvalStatus === "pending" ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => approveDevice(device)}
+                          className="flex-1 px-4 py-2 text-left text-[11px] font-bold text-[#35511e] hover:bg-[#f8ffed] disabled:opacity-40"
+                        >
+                          Approve device
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => removeDevice(device)}
+                        className="flex-1 px-4 py-2 text-left text-[11px] font-semibold text-[#7c5248] hover:bg-[#fff7f4] disabled:opacity-40"
+                      >
+                        Remove and revoke
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-[#d7dcd3] bg-white p-4">
+            <p className="text-sm font-semibold">Enroll laptops</p>
+            <p className="mt-1 text-xs leading-5 text-[#6b746c]">One 48-hour code can enroll the whole classroom fleet. Every new laptop still requires approval here.</p>
+            <label className="field mt-3">
+              <span>Enrollment label</span>
+              <input value={pairLabel} onChange={(event) => setPairLabel(event.target.value)} />
+            </label>
+            <label className="field mt-3">
+              <span>Maximum laptops</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={enrollmentMax}
+                onChange={(event) => setEnrollmentMax(Math.min(20, Math.max(1, Number(event.target.value) || 1)))}
+              />
+            </label>
+            <button disabled={busy} onClick={createEnrollment} className="mt-3 w-full rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Start 48-hour enrollment</button>
+            <button disabled={busy} onClick={createPairing} className="mt-2 w-full rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-50">Create one-time code instead</button>
+            {pairing && (
+              <div className="mt-3 rounded-xl bg-[#172018] p-3 text-center text-white">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#aeb8af]">{pairing.kind === "enrollment" ? `Enrollment code · up to ${pairing.maxDevices}` : "One-time code"}</p>
+                <p className="mt-1 font-mono text-2xl font-black tracking-[0.18em] text-[#b8ff5a]">{pairing.code}</p>
+                <p className="mt-1 text-[10px] text-[#aeb8af]">Expires {new Date(pairing.expiresAt).toLocaleString()}</p>
+                <button type="button" onClick={copySetupCommand} className="mt-3 rounded-full border border-[#515d53] px-3 py-1.5 text-[11px] font-bold text-white">Copy setup command</button>
+              </div>
+            )}
+          </div>
+
+          <p className="rounded-xl border border-dashed border-[#b8c0b5] p-3 text-xs leading-5 text-[#657066]">
+            Every computer keeps its local Run / Arm controls. Pairing adds remote coordination; it does not remove standalone operation or clear local completion locks.
+          </p>
+        </aside>
+
+        <section className="space-y-5">
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Dashboard overview</p>
+                <h2 className="mt-1 text-xl font-semibold">Fleet at a glance</h2>
+              </div>
+              <span className="text-xs font-semibold text-[#69736b]">
+                {latestRun ? `${latestRun.eventTitle} · ${latestRun.mode === "inspection" ? "rehearsal" : "live test"}` : "No run history yet"}
+              </span>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-xl bg-[#f3f5ef] p-4">
+                <p className="text-2xl font-semibold">{onlineDevices.length}<span className="text-sm text-[#7b847c]">/{state.devices.length}</span></p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em] text-[#69736b]">Online now</p>
+              </div>
+              <div className="rounded-xl bg-[#f3f5ef] p-4">
+                <p className="text-2xl font-semibold">{readySelectedDevices.length}<span className="text-sm text-[#7b847c]">/{selected.length}</span></p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em] text-[#69736b]">Selected ready</p>
+              </div>
+              <div className="rounded-xl bg-[#eff8e4] p-4 text-[#35511e]">
+                <p className="text-2xl font-semibold">{latestConfirmed}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">{latestRun?.mode === "inspection" ? "Passed" : "Confirmed"}</p>
+              </div>
+              <div className="rounded-xl bg-[#fff7e8] p-4 text-[#79501f]">
+                <p className="text-2xl font-semibold">{latestNeedsReview + latestInProgress}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">Waiting / review</p>
+              </div>
+              <div className="rounded-xl bg-[#fff1ec] p-4 text-[#8b4f3f]">
+                <p className="text-2xl font-semibold">{latestIssues}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">Issues</p>
+              </div>
+            </div>
+          </article>
+
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,.65fr)]">
+            <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="eyebrow">Run configuration</p>
+                  <h2 className="mt-1 text-2xl font-semibold tracking-tight">Prepare the fleet</h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-[#69736b]">
+                    Select any number from 1–20. In live mode, every selected laptop receives one independent, one-use execution lease.
+                  </p>
+                </div>
+                <div className="flex rounded-full border border-[#cbd2c7] bg-[#f3f5ef] p-1 text-xs font-bold">
+                  <button disabled={configurationLocked} onClick={() => setMode("inspection")} className={`rounded-full px-3 py-1.5 disabled:opacity-40 ${mode === "inspection" ? "bg-white shadow-sm" : "text-[#69736b]"}`}>Rehearsal</button>
+                  <button disabled={configurationLocked} onClick={() => setMode("live")} className={`rounded-full px-3 py-1.5 disabled:opacity-40 ${mode === "live" ? "bg-[#172018] text-white" : "text-[#69736b]"}`}>Live test</button>
+                </div>
+              </div>
+
+              <div className={`mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4 ${configurationLocked ? "border-[#98b874] bg-[#f4ffe8]" : "border-[#d7dcd3] bg-[#f7f9f4]"}`}>
+                <div>
+                  <p className="text-sm font-semibold">{configurationLocked ? "Event configuration locked" : "Event-day configuration lock"}</p>
+                  <p className="mt-1 text-xs leading-5 text-[#69736b]">
+                    {configurationLocked
+                      ? "URL, title, password, release time, slot split and device selection cannot change until you unlock them."
+                      : "Lock the final setup after review to prevent accidental edits while the fleet is preparing."}
+                  </p>
+                </div>
+                <button type="button" disabled={busy || Boolean(activeRun)} onClick={toggleConfigurationLock} className="rounded-full border border-[#98a790] bg-white px-4 py-2 text-xs font-bold text-[#344132] disabled:opacity-40">
+                  {configurationLocked ? "Unlock configuration" : "Lock configuration"}
+                </button>
+              </div>
+
+              <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                <label className="field sm:col-span-2">
+                  <span>Organizer-owned POSH event URL</span>
+                  <input disabled={configurationLocked} value={eventUrl} onChange={(event) => setEventUrl(event.target.value)} placeholder="https://posh.vip/e/your-test-event" />
+                </label>
+                <label className="field sm:col-span-2">
+                  <span>Exact event title</span>
+                  <input disabled={configurationLocked} value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} placeholder="Exact title shown on the event page" />
+                </label>
+                <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <button
+                    type="button"
+                    disabled={busy || configurationLocked || Boolean(activeRun) || selected.length === 0}
+                    onClick={openEventOnSelected}
+                    className="rounded-full bg-[#b8ff5a] px-4 py-2 text-xs font-bold text-[#172018] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Open event on {selected.length || "selected"} device{selected.length === 1 ? "" : "s"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={configurationLocked}
+                    onClick={useOpenEvent}
+                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40"
+                  >
+                    Use event open on selected devices
+                  </button>
+                  <button
+                    type="button"
+                    disabled={configurationLocked}
+                    onClick={saveEventDetails}
+                    className="rounded-full border border-[#cbd2c7] px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40"
+                  >
+                    Save event details
+                  </button>
+                  <p className="w-full text-[11px] leading-5 text-[#6b746c]">
+                    To open this URL across the connected fleet, click Select online on the left, then use the green button. Chrome must be running on each laptop.
+                  </p>
+                </div>
+                <label className="field sm:col-span-2">
+                  <span>Event password (optional)</span>
+                  <input
+                    type="password"
+                    disabled={configurationLocked}
+                    autoComplete="off"
+                    maxLength={160}
+                    value={eventPassword}
+                    onChange={(event) => setEventPassword(event.target.value)}
+                    placeholder="Sent securely to every selected device"
+                  />
+                  <small className="font-normal leading-5 text-[#6b746c]">
+                    Encrypted separately for each device. The controller never receives a readable copy.
+                  </small>
+                </label>
+                <label className={`field ${mode === "live" ? "sm:col-span-2" : ""}`}>
+                  <span>Release time</span>
+                  <input disabled={configurationLocked} type="datetime-local" value={releaseAt} onChange={(event) => setReleaseAt(event.target.value)} />
+                </label>
+                {mode === "inspection" ? (
+                  <label className="field">
+                    <span>Ticket strategy</span>
+                    <select disabled={configurationLocked} value={ticketStrategy} onChange={(event) => setTicketStrategy(event.target.value as typeof ticketStrategy)}>
+                      <option value="any">Any available free RSVP</option>
+                      <option value="first">First available free RSVP</option>
+                      <option value="second">Second available free RSVP</option>
+                    </select>
+                  </label>
+                ) : (
+                  <div className="field sm:col-span-2 rounded-xl border border-[#d7dcd3] bg-[#fbfcfa] p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span>Two-slot fleet split</span>
+                      <span className="font-mono text-xs text-[#4d594f]">
+                        {firstSlotCount} slot 1 · {secondSlotCount} slot 2
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      disabled={configurationLocked}
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={firstSlotPercent}
+                      onChange={(event) => setFirstSlotPercent(Number(event.target.value))}
+                      aria-label="Percentage of selected devices targeting the first ticket slot"
+                    />
+                    <div className="flex justify-between text-[11px] font-semibold text-[#6b746c]">
+                      <span>All slot 2</span>
+                      <span>{firstSlotPercent}% toward slot 1</span>
+                      <span>All slot 1</span>
+                    </div>
+                    <div className="grid gap-2 pt-2 sm:grid-cols-2">
+                      <div className="rounded-lg bg-[#eef7df] p-3">
+                        <p className="text-xs font-bold text-[#365318]">Slot 1 · {firstSlotCount}</p>
+                        <p className="mt-1 text-[11px] leading-4 text-[#5c6a55]">
+                          {firstSlotDevices.length ? firstSlotDevices.map((device) => device.name).join(", ") : "No devices assigned"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-[#eef2f7] p-3">
+                        <p className="text-xs font-bold text-[#334b67]">Slot 2 · {secondSlotCount}</p>
+                        <p className="mt-1 text-[11px] leading-4 text-[#5c6a55]">
+                          {secondSlotDevices.length ? secondSlotDevices.map((device) => device.name).join(", ") : "No devices assigned"}
+                        </p>
+                      </div>
+                    </div>
+                    <small className="font-normal leading-5 text-[#6b746c]">
+                      The order shown here is the exact assignment that will be sent. If only one free slot is available, a slot-2 device safely uses that sole option.
+                    </small>
+                  </div>
+                )}
+                {mode === "live" && (
+                  <>
+                    <label className="field sm:col-span-2">
+                      <span>Type the exact event title to confirm</span>
+                      <input disabled={configurationLocked} value={liveConfirmation} onChange={(event) => setLiveConfirmation(event.target.value)} />
+                    </label>
+                    <label className="check-card">
+                      <input disabled={configurationLocked} type="checkbox" checked={organizerOwned} onChange={(event) => setOrganizerOwned(event.target.checked)} />
+                      <span>This private test event is organizer-owned.</span>
+                    </label>
+                    <label className="check-card">
+                      <input disabled={configurationLocked} type="checkbox" checked={permissionConfirmed} onChange={(event) => setPermissionConfirmed(event.target.checked)} />
+                      <span>Written permission for this controlled test is recorded.</span>
+                    </label>
+                  </>
+                )}
+              </div>
+
+              <div className="mt-5 rounded-xl border border-[#e0e5dc] bg-[#f7f9f4] p-4">
+                <p className="text-sm font-semibold">Execution policy</p>
+                <p className="mt-1 text-xs leading-5 text-[#6b746c]">
+                  {mode === "inspection"
+                    ? "Rehearsal checks every selected laptop without changing ticket quantity or submitting checkout."
+                    : `${selected.length || "No"} selected device${selected.length === 1 ? "" : "s"} = ${selected.length || "no"} planned reservation${selected.length === 1 ? "" : "s"}. Each account can submit at most once; no device receives a replacement lease.`}
+                </p>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-[#d7dcd3] bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">Automatic system check</p>
+                    <p className="mt-1 text-xs text-[#69736b]">
+                      {preflightRanAt
+                        ? `Last checked ${new Date(preflightRanAt).toLocaleTimeString()} · ${failedPreflightChecks} failed · ${warningPreflightChecks} warnings`
+                        : "Refreshes fleet state and checks the event, authorization, clocks, pages and host capacity."}
+                    </p>
+                  </div>
+                  <button type="button" disabled={busy} onClick={runSystemCheck} className="rounded-full bg-[#172018] px-4 py-2 text-xs font-bold text-white disabled:opacity-40">
+                    {busy ? "Checking…" : "Run system check"}
+                  </button>
+                </div>
+                {preflightRanAt ? (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    {preflightChecks.map((check) => (
+                      <div key={check.id} className={`rounded-lg border p-3 ${check.status === "pass" ? "border-[#c9dbb6] bg-[#f7ffef]" : check.status === "warn" ? "border-[#ead0a9] bg-[#fff9ef]" : "border-[#e6bfb4] bg-[#fff4f1]"}`}>
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2 w-2 rounded-full ${check.status === "pass" ? "bg-[#6d9d38]" : check.status === "warn" ? "bg-[#c88935]" : "bg-[#bd624b]"}`} />
+                          <p className="text-xs font-bold">{check.label}</p>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-4 text-[#69736b]">{check.detail}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
+              {mode === "live" && selected.length > 0 && (
+                <div className={`mt-3 rounded-xl border p-4 ${readySelectedDevices.length === selected.length ? "border-[#b9c7ac] bg-[#f8ffed]" : "border-[#e3c6a5] bg-[#fff9f1]"}`}>
+                  <p className="text-sm font-semibold">Fleet preflight: {readySelectedDevices.length}/{selected.length} ready</p>
+                  <p className="mt-1 text-xs leading-5 text-[#6b746c]">
+                    {readySelectedDevices.length === selected.length
+                      ? `${preparedSelectedDevices.length}/${selected.length} already prepared. Activation will stagger page preparation, hold the ticket selector open, and release locally at the exact scheduled time.`
+                      : "Open the event page, keep that tab visible, and resolve the readiness message shown on each selected device card."}
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button disabled={busy || Boolean(activeRun) || selected.length === 0} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
+                  {busy ? "Working…" : mode === "live" ? `Prepare + activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run fleet rehearsal"}
+                </button>
+                <button disabled={busy || !activeRun} onClick={stopAll} className="rounded-full border border-[#cbd2c7] px-5 py-3 text-sm font-bold text-[#4d594f] disabled:opacity-40">Stop active run</button>
+                <button disabled={busy || selected.length === 0} onClick={resetSelectedDevices} className="rounded-full border border-[#b46d57] px-5 py-3 text-sm font-bold text-[#8b4f3f] disabled:opacity-40">Reset selected devices</button>
+              </div>
+            </article>
+
+            <article className="rounded-2xl border border-[#d7dcd3] bg-[#172018] p-5 text-white shadow-[0_8px_30px_rgb(23_32_24/10%)] sm:p-6">
+              <p className="eyebrow text-[#aeb8af]">Safety state</p>
+              <div className="mt-4 grid h-28 w-28 place-items-center rounded-full border border-[#465148] bg-[#202a22] shadow-[inset_0_0_0_8px_rgb(184_255_90/5%)]">
+                <div className="text-center">
+                  <p className="text-3xl font-semibold text-[#b8ff5a]">{activeLeases.length}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#aeb8af]">leases</p>
+                </div>
+              </div>
+              <h2 className="mt-5 text-xl font-semibold">{activeLeases.length ? `${activeLeases.length} device${activeLeases.length === 1 ? " is" : "s are"} authorized` : "Live execution is locked"}</h2>
+              <p className="mt-2 text-sm leading-6 text-[#b8c0b8]">
+                {activeLeases.length
+                  ? "Each active lease belongs to one selected laptop and permits no more than one reservation from that device."
+                  : "No device has central permission to submit. Local device controls remain independent."}
+              </p>
+              <button disabled={!activeRun || busy} onClick={stopAll} className="mt-6 w-full rounded-full border border-[#515d53] px-4 py-2.5 text-sm font-bold text-[#d8ddd8] disabled:opacity-40">Emergency stop all</button>
+            </article>
+          </div>
+
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 sm:p-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Fleet overview</p>
+                <h2 className="mt-1 text-xl font-semibold">Readiness and results</h2>
+              </div>
+              <span className="text-xs font-semibold text-[#69736b]">
+                {latestRun ? `${latestRun.eventTitle} · ${latestRun.status}` : "No run history yet"}
+              </span>
+            </div>
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                <thead className="text-[11px] uppercase tracking-[0.12em] text-[#7b847c]">
+                  <tr className="border-b border-[#dfe4dc]">
+                    <th className="pb-3 font-bold">Laptop</th>
+                    <th className="pb-3 font-bold">Connection</th>
+                    <th className="pb-3 font-bold">Preflight</th>
+                    <th className="pb-3 font-bold">Target</th>
+                    <th className="pb-3 font-bold">Latest run</th>
+                    <th className="pb-3 font-bold">Last check-in</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.devices.length === 0 ? (
+                    <tr><td colSpan={6} className="py-8 text-center text-[#7b847c]">Enrolled laptops will appear here.</td></tr>
+                  ) : (
+                    state.devices.map((device) => {
+                      const issue = readinessIssue(device, eventUrl, eventTitle);
+                      const runDevice = latestRunDevices.find((entry) => entry.device_id === device.id);
+                      const runStatus = latestRunStatusByDevice.get(device.id);
+                      return (
+                        <tr key={device.id} className="border-b border-[#edf0e9] last:border-0">
+                          <td className="py-3 font-semibold">{device.name}<span className="ml-2 font-mono text-[10px] text-[#7b847c]">{device.version}</span></td>
+                          <td className="py-3"><span className={device.online ? "text-[#446426]" : "text-[#8b5e52]"}>{device.online ? "Online" : "Offline"}</span></td>
+                          <td className={`py-3 font-semibold ${issue ? "text-[#9b5f24]" : "text-[#446426]"}`}>{issue || "Ready"}</td>
+                          <td className="py-3 text-[#59645b]">
+                            {runDevice
+                              ? runDevice.ticket_strategy === "first"
+                                ? "Slot 1"
+                                : runDevice.ticket_strategy === "second"
+                                  ? "Slot 2"
+                                  : "Any"
+                              : "—"}
+                          </td>
+                          <td className="py-3 capitalize text-[#59645b]">{runStatus ? runStatus.replaceAll("-", " ") : "Not included"}</td>
+                          <td className="py-3 font-mono text-xs text-[#657066]">{device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleTimeString() : "Never"}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 sm:p-6">
+            <div className="flex items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Audit stream</p>
+                <h2 className="mt-1 text-xl font-semibold">Recent activity</h2>
+              </div>
+              <span className="text-xs font-semibold text-[#69736b]">Newest first</span>
+            </div>
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full min-w-[620px] border-collapse text-left text-sm">
+                <thead className="text-[11px] uppercase tracking-[0.12em] text-[#7b847c]">
+                  <tr className="border-b border-[#dfe4dc]"><th className="pb-3 font-bold">Time</th><th className="pb-3 font-bold">Source</th><th className="pb-3 font-bold">Event</th></tr>
+                </thead>
+                <tbody>
+                  {state.events.length === 0 ? (
+                    <tr><td colSpan={3} className="py-8 text-center text-[#7b847c]">Activity will appear when a device pairs or a run begins.</td></tr>
+                  ) : (
+                    state.events.map((event) => (
+                      <tr key={event.id} className="border-b border-[#edf0e9] last:border-0">
+                        <td className="py-3 font-mono text-xs text-[#657066]">{new Date(event.created_at).toLocaleTimeString()}</td>
+                        <td className="py-3 font-semibold">{event.source}</td>
+                        <td className="py-3 text-[#59645b]">{event.action.replaceAll("-", " ")}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </div>
+
+      <section className={`${view === "hosts" ? "block" : "hidden"} mx-auto max-w-[1500px] px-5 py-6 lg:px-8`}>
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">Secondary system</p>
+                <h2 className="mt-1 text-2xl font-semibold tracking-tight">Multi-profile Chrome hosts</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#69736b]">
+                  Each physical computer can run up to four isolated Chrome workers. Every worker keeps its own POSH login, encrypted command channel, ticket assignment and one-use lease. Classic one-laptop devices remain unchanged.
+                </p>
+              </div>
+              <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-xs font-semibold text-[#4f5b51]">
+                {profileHostGroups.length} host{profileHostGroups.length === 1 ? "" : "s"} · {profileWorkers.length} workers
+              </span>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              {profileHostGroups.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-[#b8c0b5] bg-[#fbfcfa] p-6">
+                  <h3 className="font-semibold">No profile hosts are connected yet</h3>
+                  <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-6 text-[#69736b]">
+                    <li>Create a 48-hour enrollment code in Operations with room for every Chrome worker.</li>
+                    <li>Run the Multi-Profile Host setup file once on the physical computer.</li>
+                    <li>Load each numbered extension into its matching Chrome window, sign into POSH, and approve the workers here.</li>
+                  </ol>
+                  <a href={PROFILE_HOST_RELEASE_URL} target="_blank" rel="noreferrer" className="mt-5 inline-flex rounded-full bg-[#172018] px-4 py-2.5 text-sm font-bold text-white">
+                    Download profile-host release
+                  </a>
+                </div>
+              ) : (
+                profileHostGroups.map((host) => {
+                  const onlineWorkers = host.workers.filter((worker) => worker.online);
+                  const connectedBrowsers = host.workers.filter(
+                    (worker) => worker.state.extensionConnected === true,
+                  );
+                  const eventReadyWorkers = host.workers.filter(
+                    (worker) => worker.state.pageReady === true,
+                  );
+                  const sampleResources = host.workers.find(
+                    (worker) => worker.state.hostResources && typeof worker.state.hostResources === "object",
+                  )?.state.hostResources as Record<string, unknown> | undefined;
+                  const lastCheckInAt = Math.max(...host.workers.map((worker) => worker.lastSeenAt || 0));
+                  const clockOffsets = host.workers
+                    .map((worker) => Math.abs(Number(worker.state.clockOffsetMs ?? 0)))
+                    .filter(Number.isFinite);
+                  const roundTrips = host.workers
+                    .map((worker) => Number(worker.state.clockRoundTripMs ?? 0))
+                    .filter(Number.isFinite);
+                  const memoryConstrained = Boolean(
+                    sampleResources && host.workers.length >= 4 &&
+                    (Number(sampleResources.totalMemoryMb || 0) < 12_000 || Number(sampleResources.freeMemoryMb || 0) < 1_000),
+                  );
+                  return (
+                    <div key={host.id} className="rounded-2xl border border-[#d7dcd3] bg-[#fbfcfa] p-4 sm:p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className={`device-dot ${onlineWorkers.length === host.workers.length ? "ready" : "local"}`} />
+                            <h3 className="text-lg font-semibold">{host.name}</h3>
+                          </div>
+                          <p className="mt-1 text-sm text-[#69736b]">
+                            {onlineWorkers.length}/{host.workers.length} host channels online · {connectedBrowsers.length} browsers open · {eventReadyWorkers.length} event ready
+                          </p>
+                          {sampleResources ? (
+                            <p className="mt-1 font-mono text-xs text-[#7a837b]">
+                              {Number(sampleResources.cpuCount || 0)} CPU threads · {Math.round(Number(sampleResources.freeMemoryMb || 0) / 1024)} GB free of {Math.round(Number(sampleResources.totalMemoryMb || 0) / 1024)} GB
+                            </p>
+                          ) : null}
+                          <p className="mt-1 font-mono text-xs text-[#7a837b]">
+                            Last check-in {lastCheckInAt ? new Date(lastCheckInAt).toLocaleTimeString() : "never"} · max clock offset {Math.round(Math.max(0, ...clockOffsets))}ms · max latency {Math.round(Math.max(0, ...roundTrips))}ms
+                          </p>
+                          {memoryConstrained ? (
+                            <p className="mt-2 rounded-lg bg-[#fff0d9] px-3 py-2 text-xs font-semibold text-[#79501f]">
+                              Four workers may strain this host. Close other apps or select three workers for a faster release.
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" disabled={busy || Boolean(activeRun)} onClick={() => launchProfileWorkers(host)} className="rounded-full bg-[#b8ff5a] px-4 py-2 text-xs font-bold text-[#172018] disabled:opacity-40">
+                            Launch all workers
+                          </button>
+                          <button type="button" onClick={() => selectHostForOperations(host)} className="rounded-full border border-[#cbd2c7] bg-white px-4 py-2 text-xs font-bold text-[#4d594f]">
+                            Select for operations
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => refreshProfileHost(host)} className="rounded-full border border-[#cbd2c7] bg-white px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40">
+                            Refresh bridge
+                          </button>
+                          <button type="button" disabled={busy} onClick={() => resetProfileWorkers(host)} className="rounded-full border border-[#d7a797] bg-white px-4 py-2 text-xs font-bold text-[#8b4f3f] disabled:opacity-40">
+                            Reset host workers
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        {host.workers.map((worker) => {
+                          const workerIndex = Number(worker.state.workerIndex || 0);
+                          const browserConnected = worker.state.extensionConnected === true;
+                          return (
+                            <div key={worker.id} className="rounded-xl border border-[#e0e5dc] bg-white p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-semibold">Profile {workerIndex || "—"}</p>
+                                  <p className="mt-0.5 text-xs text-[#69736b]">{worker.name}</p>
+                                </div>
+                                <span className={`device-dot ${worker.online && browserConnected ? "ready" : worker.online ? "waiting" : "local"}`} />
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold">
+                                <span className={`rounded-full px-2 py-1 ${worker.online ? "bg-[#eaf4d9] text-[#35511e]" : "bg-[#f2e7e3] text-[#7c5248]"}`}>
+                                  {worker.online ? "Host online" : "Host offline"}
+                                </span>
+                                <span className={`rounded-full px-2 py-1 ${browserConnected ? "bg-[#eaf4d9] text-[#35511e]" : "bg-[#eef0ec] text-[#5d675f]"}`}>
+                                  {browserConnected ? "Browser open" : "Browser closed"}
+                                </span>
+                                {worker.approvalStatus === "pending" ? (
+                                  <span className="rounded-full bg-[#fff0d9] px-2 py-1 text-[#79501f]">Approve in Operations</span>
+                                ) : null}
+                              </div>
+                              <p className="mt-2 text-[11px] leading-4 text-[#69736b]">
+                                {worker.lastSeenAt ? `Checked in ${new Date(worker.lastSeenAt).toLocaleTimeString()}` : "Never checked in"}
+                                {typeof worker.state.latestMessage === "string" && worker.state.latestMessage
+                                  ? ` · ${worker.state.latestMessage}`
+                                  : ""}
+                              </p>
+                              <div className="mt-3 flex gap-2">
+                                <button type="button" disabled={busy || Boolean(activeRun) || !worker.online || worker.approvalStatus !== "approved"} onClick={() => launchSingleProfileWorker(worker)} className="rounded-full bg-[#172018] px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-35">
+                                  Launch
+                                </button>
+                                <button type="button" disabled={busy || worker.approvalStatus !== "approved"} onClick={() => resetProfileWorkers(host, worker)} className="rounded-full border border-[#d7a797] px-3 py-1.5 text-[11px] font-bold text-[#8b4f3f] disabled:opacity-35">
+                                  Reset
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </article>
+
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-[#d7dcd3] bg-[#172018] p-5 text-white">
+              <p className="eyebrow text-[#aeb8af]">Day-of workflow</p>
+              <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm leading-6 text-[#d6ddd6]">
+                <li>Launch every host’s workers.</li>
+                <li>Resolve any POSH login or security prompt.</li>
+                <li>Select the workers for Operations.</li>
+                <li>Open the event, rehearse, then prepare and activate.</li>
+              </ol>
+            </div>
+            <div className="rounded-2xl border border-[#d7dcd3] bg-white p-5">
+              <h3 className="font-semibold">One-time manual step</h3>
+              <p className="mt-2 text-sm leading-6 text-[#69736b]">
+                Chrome requires each unpacked extension to be loaded once in its matching profile. POSH login, OTP and CAPTCHA also remain manual. After that, the profile cookies and worker identity persist across launches.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-[#d7dcd3] bg-white p-5">
+              <h3 className="font-semibold">Two-profile acceptance check</h3>
+              <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-6 text-[#69736b]">
+                <li>Start with two workers and sign each into a separate approved test account.</li>
+                <li>Run the automatic system check until there are no failures.</li>
+                <li>Run Rehearsal and confirm both profiles pass independently.</li>
+                <li>Reset both workers, repeat the rehearsal, then test the one-click launch after closing Chrome.</li>
+              </ol>
+              <p className="mt-3 text-xs leading-5 text-[#7a837b]">Only move to three or four profiles on this host after the two-profile check is clean.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section className={`${view === "directory" ? "block" : "hidden"} mx-auto max-w-[1500px] px-5 py-6 lg:px-8`}>
+        <article className="rounded-2xl border border-[#d7dcd3] bg-white p-5 shadow-[0_8px_30px_rgb(23_32_24/4%)] sm:p-6">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="eyebrow">Fleet directory</p>
+              <h2 className="mt-1 text-2xl font-semibold tracking-tight">Accounts and laptop notes</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-[#69736b]">
+                Add optional POSH account details and a secondary label for each laptop. These details stay in the protected dashboard database and are never sent to the device or used during a run.
+              </p>
+            </div>
+            <span className="rounded-full bg-[#eef0ec] px-3 py-1.5 text-xs font-semibold text-[#4f5b51]">
+              {state.devices.length} paired
+            </span>
+          </div>
+
+          <div className="mt-6 grid gap-4 xl:grid-cols-2">
+            {state.devices.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[#b8c0b5] p-6 text-sm text-[#69736b]">
+                Pair a laptop first, then its optional account fields will appear here.
+              </div>
+            ) : (
+              state.devices.map((device) => {
+                const profile = profileDrafts[device.id] ?? {
+                  contactEmail: device.contactEmail ?? "",
+                  contactPhone: device.contactPhone ?? "",
+                  description: device.description ?? "",
+                };
+                return (
+                  <div key={device.id} className="rounded-2xl border border-[#d7dcd3] bg-[#fbfcfa] p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="font-semibold">{device.name}</h3>
+                        <p className="mt-1 text-xs text-[#69736b]">
+                          {device.version} · {device.online ? "Online" : "Offline"}
+                        </p>
+                      </div>
+                      <span className={`device-dot ${device.online ? "ready" : "local"}`} />
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <label className="field">
+                        <span>POSH account email</span>
+                        <input
+                          type="email"
+                          maxLength={254}
+                          value={profile.contactEmail}
+                          onChange={(event) => updateProfileDraft(device.id, "contactEmail", event.target.value)}
+                          placeholder="account@example.com"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>Account phone</span>
+                        <input
+                          type="tel"
+                          maxLength={40}
+                          value={profile.contactPhone}
+                          onChange={(event) => updateProfileDraft(device.id, "contactPhone", event.target.value)}
+                          placeholder="Optional"
+                        />
+                      </label>
+                      <label className="field sm:col-span-2">
+                        <span>Secondary label / description</span>
+                        <input
+                          maxLength={200}
+                          value={profile.description}
+                          onChange={(event) => updateProfileDraft(device.id, "description", event.target.value)}
+                          placeholder="Example: Sam's account, backup laptop"
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => saveDeviceProfile(device)}
+                      className="mt-4 rounded-full bg-[#172018] px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
+                    >
+                      Save account details
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </article>
+      </section>
+    </main>
+  );
+}

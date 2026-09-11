@@ -1,0 +1,1 @@
+ALTER TABLE `run_devices` ADD `ticket_strategy` text DEFAULT 'any' NOT NULL;

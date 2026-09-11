@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1788224095873,
+      "tag": "0000_rich_secret_warriors",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788239697700,
+      "tag": "0001_chief_thunderbolts",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788313590196,
+      "tag": "0002_nice_wolf_cub",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788317754982,
+      "tag": "0003_concerned_dazzler",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788328896871,
+      "tag": "0004_illegal_white_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788361958763,
+      "tag": "0005_shiny_hobgoblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788977437015,
+      "tag": "0006_dusty_sally_floyd",
+      "breakpoints": true
+    }
+  ]
+}
