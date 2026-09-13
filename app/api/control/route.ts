@@ -3,6 +3,13 @@ import { cookies } from "next/headers";
 import { audit, ensureControlSchema, nowMs, parseJson, randomPairingCode, sha256 } from "../../../db/control";
 import { getD1 } from "../../../db";
 import { CONTROLLER_REVISION, isDeviceOnline } from "../../../db/device-presence";
+import { hostAwarePreparationOrder } from "../../preparation-order";
+import {
+  AUTOBOT_BUILD_ID,
+  MIN_LIVE_PREPARATION_MS,
+  PREPARATION_DEADLINE_LEAD_MS,
+  profileBuildMatches,
+} from "../../release";
 import {
   CONTROLLER_OWNER_ID,
   isSameOriginRequest,
@@ -217,6 +224,7 @@ export async function GET() {
 
   return NextResponse.json({
     controllerRevision: CONTROLLER_REVISION,
+    expectedBuildId: AUTOBOT_BUILD_ID,
     user: { displayName: user.displayName, email: user.email },
     devices,
     runs,
@@ -389,6 +397,64 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
+      case "calibrate-profile-host": {
+        const deviceId = nonEmpty(body.deviceId, "Device ID");
+        const device = await getD1()
+          .prepare(
+            `SELECT id, name, version, approval_status, last_seen_at, state_json FROM devices
+             WHERE id = ? AND owner_id = ? LIMIT 1`,
+          )
+          .bind(deviceId, user.userId)
+          .first<{
+            id: string;
+            name: string;
+            version: string;
+            approval_status: string;
+            last_seen_at: number | null;
+            state_json: string;
+          }>();
+        if (!device) throw new Error("Profile host worker not found.");
+        const state = parseJson<Record<string, unknown>>(device.state_json, {});
+        if (device.approval_status !== "approved") throw new Error("Approve this profile host first.");
+        if (state.profileMode !== "multi") {
+          throw new Error("Calibration is available only for a multi-profile host.");
+        }
+        if (state.hostBuildId !== AUTOBOT_BUILD_ID) {
+          throw new Error(`Update the profile host to ${AUTOBOT_BUILD_ID} before calibrating it.`);
+        }
+        if (!isDeviceOnline(device.last_seen_at, nowMs(), state)) {
+          throw new Error("The profile-host service is offline. Start it locally before calibration.");
+        }
+        const activeRun = await getD1()
+          .prepare("SELECT id FROM runs WHERE owner_id = ? AND status IN ('draft', 'armed', 'blocked') LIMIT 1")
+          .bind(user.userId)
+          .first<{ id: string }>();
+        if (activeRun) throw new Error("Stop or finish the active run before calibrating a host.");
+
+        const timestamp = nowMs();
+        const db = getD1();
+        await db.batch([
+          db.prepare(
+            `UPDATE commands SET status = 'acknowledged', acknowledged_at = ?
+             WHERE owner_id = ? AND device_id = ? AND type = 'calibrate-host'
+               AND status IN ('queued', 'delivered')`,
+          ).bind(timestamp, user.userId, deviceId),
+          db.prepare(
+            `INSERT INTO commands
+             (id, owner_id, device_id, run_id, type, payload_json, status, created_at)
+             VALUES (?, ?, ?, NULL, 'calibrate-host', '{}', 'queued', ?)`,
+          ).bind(crypto.randomUUID(), user.userId, deviceId, timestamp),
+        ]);
+        await audit({
+          ownerId: user.userId,
+          deviceId,
+          source: "control",
+          action: "profile-host-calibration-requested",
+          detail: { hostId: state.hostId ?? null },
+        });
+        return NextResponse.json({ ok: true });
+      }
+
       case "launch-workers": {
         const selectedIds = Array.isArray(body.deviceIds)
           ? [...new Set(body.deviceIds.filter((id): id is string => typeof id === "string" && id.length > 0))]
@@ -427,6 +493,9 @@ export async function POST(request: NextRequest) {
           }
           if (!versionAtLeast(device.version, [0, 13, 0]) || state.profileMode !== "multi") {
             throw new Error(`${device.name} is a classic device, not a multi-profile worker.`);
+          }
+          if (state.hostBuildId !== AUTOBOT_BUILD_ID) {
+            throw new Error(`${device.name}'s profile host must be updated to ${AUTOBOT_BUILD_ID}.`);
           }
           if (!isDeviceOnline(device.last_seen_at, timestamp, state)) {
             throw new Error(`${device.name}'s profile-host service is offline.`);
@@ -668,6 +737,12 @@ export async function POST(request: NextRequest) {
         if (deviceStates.some((device) => !isDeviceOnline(device.last_seen_at, nowMs(), device.state))) {
           throw new Error("Every selected device must be online before arming.");
         }
+        if (
+          run.mode === "live" &&
+          deviceStates.some((device) => !device.last_seen_at || device.last_seen_at < nowMs() - 8_000)
+        ) {
+          throw new Error("Every selected device needs a fresh active check-in within eight seconds before live activation.");
+        }
         if (deviceStates.some((device) => device.state.controlConnected !== true)) {
           throw new Error("Every selected device must have command-center control enabled locally.");
         }
@@ -682,6 +757,12 @@ export async function POST(request: NextRequest) {
         }
         if (run.mode === "live" && deviceStates.some((device) => !supportsFastRelease(device.version))) {
           throw new Error("Every selected device must run AUTOBOT v0.12.2 or newer for prepared live activation.");
+        }
+        if (run.mode === "live" && deviceStates.some((device) => !profileBuildMatches(device.state))) {
+          throw new Error(`Every multi-profile worker must use the exact ${AUTOBOT_BUILD_ID} host and extension build.`);
+        }
+        if (run.mode === "live" && Number(run.release_at) - nowMs() < MIN_LIVE_PREPARATION_MS) {
+          throw new Error("Live activation needs at least 20 seconds to prepare every selected worker safely.");
         }
 
         const encryptedSecrets =
@@ -717,6 +798,8 @@ export async function POST(request: NextRequest) {
         };
         const timestamp = nowMs();
         const db = getD1();
+        let preparationOrder: string[] = [];
+        let prepareDeadlineAt: number | null = null;
 
         if (run.mode === "inspection") {
           const statements = selectedIds.flatMap((deviceId) => [
@@ -773,12 +856,21 @@ export async function POST(request: NextRequest) {
             0,
             Math.min(30_000, Number(run.release_at) - timestamp - 20_000),
           );
+          preparationOrder = hostAwarePreparationOrder(
+            selectedIds,
+            deviceStates.map((device) => ({ id: device.id, state: device.state })),
+          );
+          const preparationPosition = new Map(
+            preparationOrder.map((deviceId, index) => [deviceId, index]),
+          );
+          prepareDeadlineAt = Number(run.release_at) - PREPARATION_DEADLINE_LEAD_MS;
           const statements = selectedIds.flatMap((deviceId, deviceIndex) => {
             const leaseId = crypto.randomUUID();
             const assignedTicketStrategy = assignments.get(deviceId) ?? "first";
+            const preparationIndex = preparationPosition.get(deviceId) ?? deviceIndex;
             const prepareAt = timestamp + (
               selectedIds.length > 1
-                ? Math.round((preparationSpreadMs * deviceIndex) / (selectedIds.length - 1))
+                ? Math.round((preparationSpreadMs * preparationIndex) / (selectedIds.length - 1))
                 : 0
             );
             return [
@@ -805,6 +897,8 @@ export async function POST(request: NextRequest) {
                 JSON.stringify({
                 ...payload,
                 prepareAt,
+                prepareDeadlineAt,
+                preparationIndex: preparationIndex + 1,
                 ticketStrategy: assignedTicketStrategy,
                 execute: true,
                 leaseId,
@@ -835,6 +929,12 @@ export async function POST(request: NextRequest) {
               run.mode === "live"
                 ? Math.max(0, Math.min(30_000, Number(run.release_at) - timestamp - 20_000))
                 : 0,
+            ...(run.mode === "live"
+              ? {
+                  preparationOrder,
+                  prepareDeadlineAt,
+                }
+              : {}),
             ...(run.mode === "live"
               ? {
                   firstSlotDevices: Number.isInteger(Number(body.firstSlotCount))
