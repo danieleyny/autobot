@@ -22,7 +22,7 @@ const response = await fetch(`${controllerUrl}/api/device`, {
     action: "pair",
     code,
     name,
-    version: "0.13.0",
+    version: "0.13.1",
     publicKey: keyPair.publicKeyPem,
   }),
 });

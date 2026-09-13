@@ -10,7 +10,8 @@ async function installChromeMock(
     const values: Record<string, unknown> = {};
     let pending: Record<string, unknown> | null = initialCommand;
     const reports: Array<Record<string, unknown>> = [];
-    Object.assign(window, { __autobotControlReports: reports });
+    const statuses: Array<Record<string, unknown>> = [];
+    Object.assign(window, { __autobotControlReports: reports, __autobotControlStatuses: statuses });
     const storage = {
       async get(keys: string | string[] | null) {
         if (keys === null) return { ...values };
@@ -30,6 +31,7 @@ async function installChromeMock(
           return { ok: true };
         }
         if (message.type === "autobot:control-poll") {
+          statuses.push(message.status as Record<string, unknown>);
           return { connected: true, deviceName: "Test Device", command: pending };
         }
         if (message.type === "autobot:control-report") {
@@ -181,6 +183,7 @@ test("live fleet command arms one independent executor without clicking before r
       eventUrl: "http://127.0.0.1:4173/event",
       eventTitle: "AUTOBOT Classroom Test Drop",
       releaseAt,
+      prepareDeadlineAt: releaseAt - 10_000,
       ticketStrategy: "any",
       eventPassword: "fleet-password",
       leaseId: "executor-lease-1",
@@ -233,6 +236,59 @@ test("live fleet command arms one independent executor without clicking before r
   await expect(page.locator("#event-password")).toHaveValue("fleet-password");
   await expect(page.locator("#release-at")).not.toHaveValue("");
   await expect(page.locator("#arm")).toContainText("Armed");
+  await expect.poll(
+    () => page.evaluate(
+      () => (window as unknown as { __autobotControlStatuses: Array<Record<string, unknown>> })
+        .__autobotControlStatuses.at(-1)?.prepareDeadlineAt,
+    ),
+    { timeout: 3_000 },
+  ).toBe(releaseAt - 10_000);
+  const latestStatus = await page.evaluate(
+    () => (window as unknown as { __autobotControlStatuses: Array<Record<string, unknown>> })
+      .__autobotControlStatuses.at(-1),
+  );
+  expect(latestStatus?.extensionBuildId).toBe("v0.13.1-beta.1");
+  expect(latestStatus?.prepareDeadlineAt).toBe(releaseAt - 10_000);
+});
+
+test("managed live preparation stops with a clear deadline error before release", async ({ page }) => {
+  const releaseAt = Date.now() + 60_000;
+  await installChromeMock(page, {
+    id: "late-preparation-command",
+    runId: "late-preparation-run",
+    type: "arm-live",
+    payload: {
+      runId: "late-preparation-run",
+      eventUrl: "http://127.0.0.1:4173/event",
+      eventTitle: "AUTOBOT Classroom Test Drop",
+      releaseAt,
+      prepareAt: Date.now(),
+      prepareDeadlineAt: Date.now() + 100,
+      ticketStrategy: "first",
+      leaseId: "late-preparation-lease",
+      fleetSize: 1,
+      execute: true,
+    },
+  });
+  await page.goto("http://127.0.0.1:4173/event");
+  await page.setContent(`
+    <title>AUTOBOT Classroom Test Drop</title>
+    <main><h1>AUTOBOT Classroom Test Drop</h1></main>
+  `);
+  await page.addScriptTag({ path: path.resolve("extension/content.js") });
+
+  await expect.poll(
+    () => page.evaluate(
+      () => (window as unknown as { __autobotControlReports: Array<Record<string, unknown>> })
+        .__autobotControlReports.find((report) => report.phase === "failed"),
+    ),
+    { timeout: 5_000 },
+  ).toBeTruthy();
+  const failed = await page.evaluate(
+    () => (window as unknown as { __autobotControlReports: Array<Record<string, unknown>> })
+      .__autobotControlReports.find((report) => report.phase === "failed"),
+  );
+  expect(String((failed?.detail as Record<string, unknown>)?.message)).toMatch(/preparation deadline/i);
 });
 
 test("central slot-two assignment selects the second displayed free RSVP", async ({ page }) => {

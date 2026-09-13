@@ -1,5 +1,5 @@
-AUTOBOT v0.13.0 - MULTI-PROFILE HOST QUICK START
-================================================
+AUTOBOT v0.13.1-beta.1 - MULTI-PROFILE HOST QUICK START
+======================================================
 
 This is the optional secondary system. It runs 1-4 isolated Chrome profiles on
 one physical Mac or Windows computer. Each profile has its own POSH login,
@@ -39,9 +39,16 @@ ONE-TIME SETUP IN EACH PROFILE WINDOW
 EVERY LATER SESSION
 
 The host bridge starts when you sign into the computer. Open Command Center >
-Profile hosts and click Launch all workers. Saved profile cookies are reused,
-but any POSH login, OTP, CAPTCHA, security, or consent prompt remains manual.
-Then click Select for operations, send the event URL, and run a rehearsal.
+Profile hosts and click Launch all workers. A local watchdog reopens a numbered
+Chrome worker if it closes unexpectedly, except from five minutes before through
+two minutes after a live release. Saved profile cookies are reused, but any POSH
+login, OTP, CAPTCHA, security, or consent prompt remains manual.
+
+When all browsers and event pages are ready, click Calibrate host. Use the
+recommended worker count shown by the Command Center. Then use the guided steps:
+Select online fleet, Launch selected profile browsers, Open event everywhere,
+Run fresh system check, Lock configuration, and finally choose Rehearsal or Live
+test. Live preparation must finish before the displayed preparation deadline.
 
 IMPORTANT
 
@@ -54,6 +61,16 @@ IMPORTANT
 - The profile host listens only on 127.0.0.1:4182. The original classic bridge
   remains separate on 127.0.0.1:4181.
 - Run npm run test:profiles from the extracted folder for a local routing test.
+- The dashboard and every profile must show the exact v0.13.1-beta.1 build before
+  a live run can be activated.
+
+UPGRADING THIS PROFILE HOST
+
+Download and extract the newest beta ZIP, then run the profile-host setup file
+again. The assistant keeps the saved pairing and Chrome profile data. In every
+numbered Chrome profile, open chrome://extensions and click Reload on AUTOBOT,
+then restart the host service or computer once. Do not revoke the workers or
+delete their profile folders during an upgrade.
 
 IF A WORKER WAS REMOVED OR REVOKED
 

@@ -1,6 +1,6 @@
 {
   "name": "autobot-command-center",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "private": true,
   "description": "A one-shot Playwright RSVP automation lab for an organizer-owned test event.",
   "type": "module",
@@ -22,6 +22,7 @@
     "device:simulate": "tsx src/control/simulate.ts",
     "test:control": "tsx src/control/test-controller.ts",
     "test:profiles": "tsx src/control/test-profile-host.ts",
+    "test:preparation": "tsx src/control/test-preparation.ts",
     "test:presence": "tsx --test src/control/test-presence.ts",
     "typecheck": "tsc --noEmit",
     "test": "playwright test"

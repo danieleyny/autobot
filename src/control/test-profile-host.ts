@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "autobot-profile-host-test-"));
 const bridgePort = 43_000 + Math.floor(Math.random() * 1_000);
 const commands = new Map<string, Record<string, unknown> | null>();
-const reports: Array<{ token: string; commandId: string; phase: string }> = [];
+const reports: Array<{ token: string; commandId: string; phase: string; detail?: Record<string, unknown> }> = [];
 let pairedWorkers = 0;
 
 const controller = createServer(async (request, response) => {
@@ -46,7 +46,12 @@ const controller = createServer(async (request, response) => {
     return;
   }
   if (body.action === "report") {
-    reports.push({ token, commandId: String(body.commandId), phase: String(body.phase) });
+    reports.push({
+      token,
+      commandId: String(body.commandId),
+      phase: String(body.phase),
+      detail: body.detail && typeof body.detail === "object" ? body.detail as Record<string, unknown> : undefined,
+    });
     commands.set(token, null);
     response.end(JSON.stringify({ ok: true }));
     return;
@@ -207,12 +212,54 @@ try {
     reports.some((report) => report.commandId === "refresh-command" && report.phase === "host-refreshed"),
     "The host refresh command should be acknowledged without involving a page worker.",
   );
+  commands.set("setup-token-3", {
+    id: "calibration-command",
+    runId: null,
+    type: "calibrate-host",
+    payload: {},
+  });
+  let feedCalibration = true;
+  const calibrationFeed = (async () => {
+    while (feedCalibration) {
+      await Promise.all([
+        extensionRequest(config.workers[0]!, "/extension/poll", {
+          status: { pageReady: true, controlEnabled: true, extensionBuildId: "v0.13.1-beta.1" },
+        }),
+        extensionRequest(config.workers[1]!, "/extension/poll", {
+          status: { pageReady: true, controlEnabled: true, extensionBuildId: "v0.13.1-beta.1" },
+        }),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  })();
+  const calibrationDeadline = Date.now() + 8_000;
+  while (
+    !reports.some((report) => report.commandId === "calibration-command" && report.phase === "host-calibrated") &&
+    Date.now() < calibrationDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  feedCalibration = false;
+  await calibrationFeed;
+  const calibrationReport = reports.find(
+    (report) => report.commandId === "calibration-command" && report.phase === "host-calibrated",
+  );
+  assert.ok(calibrationReport, "The host calibration command should finish locally.");
+  assert.equal(calibrationReport.detail?.connectedWorkers, 2);
+  assert.equal(calibrationReport.detail?.eventReadyWorkers, 2);
+  assert.equal(typeof calibrationReport.detail?.recommendedWorkerCount, "number");
   const healthResponse = await fetch(`http://127.0.0.1:${bridgePort}/health`);
   const health = (await healthResponse.json()) as Record<string, unknown>;
   assert.equal(health.ok, true);
+  assert.equal(health.buildId, "v0.13.1-beta.1");
   assert.equal((health.workers as unknown[]).length, 2);
   assert.equal(typeof (health.resources as Record<string, unknown>).totalMemoryMb, "number");
-  console.log("Profile host integration passed: setup, replacement, isolated routing, independent commands, host refresh, diagnostics, and bridge-token rejection.");
+  assert.equal((health.calibration as Record<string, unknown>).connectedWorkers, 2);
+  assert.equal(
+    ((health.workers as Array<Record<string, unknown>>)[0]?.browserRecoveryState),
+    "watching",
+  );
+  console.log("Profile host integration passed: setup, replacement, isolated routing, calibration, watchdog state, host refresh, diagnostics, and bridge-token rejection.");
 } finally {
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));

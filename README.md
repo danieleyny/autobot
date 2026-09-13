@@ -8,7 +8,7 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.13.0 adds an optional secondary multi-profile host while preserving
+AUTOBOT v0.13.1-beta.1 adds an optional secondary multi-profile host while preserving
 the original one-computer-per-device system. A physical Mac or Windows computer
 can host 1-4 isolated Chrome workers, each with its own POSH session, extension
 identity, encrypted command channel, ticket-slot assignment, and one-use lease.
@@ -17,13 +17,15 @@ profiles with one click after their one-time setup. The classic bridge stays on
 port 4181; the profile host uses port 4182, so both modes can coexist without
 changing an existing pairing.
 
-The beta dashboard adds an automatic system check, a session-only event
-configuration lock, host capacity/clock diagnostics, per-profile Launch and
-Reset controls, whole-host Reset, and a safe bridge refresh command. Start with
+The beta dashboard adds a guided event-day flow, a fresh system check, a
+session-only event configuration lock, exact-build enforcement, a local host
+capacity calibration, per-profile Launch and Reset controls, whole-host Reset,
+and a safe bridge refresh command. A browser watchdog can reopen a missing
+numbered worker outside the protected release window. Start with calibration and
 the built-in two-profile acceptance check before increasing a host to three or
 four workers.
 
-The v0.13 profile-host beta uses its own isolated dashboard at
+The v0.13.1 profile-host beta uses its own isolated dashboard at
 https://autobot-profile-host-beta.avgschnook.chatgpt.site. The working v0.12.2
 classic dashboard remains unchanged at
 https://autobot-command-center.avgschnook.chatgpt.site, providing an immediate
@@ -43,8 +45,10 @@ prepared-release path synchronizes each worker to the controller clock,
 removes hosted network and database waits from the exact release moment, reacts
 to page changes immediately, opens and verifies each assigned free-ticket
 selector before release, and adds a central reset-and-reactivate command. Page
-preparation is staggered across the fleet while the final release remains
-synchronized. A managed live run stops if its event tab is hidden, and each
+preparation is interleaved across physical hosts while the final release remains
+synchronized. Each worker must finish before the controller-issued preparation
+deadline, and any late worker is stopped before ticket submission. A managed live
+run stops if its event tab is hidden, and each
 laptop keeps a local-only timing log that can be copied from its extension panel.
 Idle bridges now check in every 15 seconds and automatically return to
 one-second command polling whenever an event page or pending command is active.
@@ -93,7 +97,9 @@ to be removed.
 6. Sign each profile into its own POSH account and approve each worker in the
    dashboard.
 7. On later sessions, open **Profile hosts** in the dashboard and click
-   **Launch all workers**, then **Select for operations**.
+   **Launch all workers**, then **Calibrate host** and **Select for operations**.
+8. Follow the guided event-day steps, run the fresh system check, lock the
+   configuration, and choose **Rehearsal** or **Live test** explicitly.
 
 Chrome requires each unpacked extension to be loaded manually once. POSH login,
 OTP, CAPTCHA, security, and consent prompts also remain manual. After setup,
@@ -126,10 +132,10 @@ npm run profiles:setup -- --code=NEW_ENROLLMENT_CODE --replace-worker=2 --no-onb
 ```
 
 To upgrade an already paired classic laptop, run the setup assistant from the
-extracted v0.13.0 folder. It preserves the saved device identity and Command Center
+extracted v0.13.1 folder. It preserves the saved device identity and Command Center
 pairing; do not remove or revoke the laptop first. Remove the old unpacked
 AUTOBOT extension in `chrome://extensions`, load the new package's `extension`
-folder, and restart the computer once so the startup bridge switches to v0.13.0.
+folder, and restart the computer once so the startup bridge switches to v0.13.1.
 
 For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
@@ -245,7 +251,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.13.0. On a POSH event page,
+Reload the unpacked extension after installing v0.13.1. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -274,8 +280,9 @@ exact number of one-use leases that will be issued.
 Managed live activation pre-opens the ticket selector and verifies the assigned
 free slot before waiting. It never changes ticket quantity during preparation.
 At release it revalidates the prepared card and starts locally without waiting
-for the controller. Preparation is staggered by up to 30 seconds to avoid a
-single fleet-wide page-loading burst.
+for the controller. Preparation is interleaved across physical hosts to avoid
+loading every profile on one computer at once, and it must finish before the
+displayed deadline. A late worker stops safely before ticket submission.
 
 After a controlled test, select the participating laptops and use **Reset
 selected devices** to stop any remaining run, clear their local test locks, and

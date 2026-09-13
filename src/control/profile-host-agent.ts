@@ -34,13 +34,42 @@ type WorkerRuntime = {
   clockSamples: Array<{ offsetMs: number; roundTripMs: number }>;
   browserLaunchPromise: Promise<void> | null;
   lastBrowserLaunchAt: number;
+  browserExpected: boolean;
+  lastBrowserRecoveryAt: number;
+  browserRecoveryState: "not-requested" | "watching" | "waiting" | "recovering" | "cooldown" | "frozen-near-release";
+  lastTargetUrl: string;
+  activeRunId: string | null;
+  activeRunReleaseAt: number | null;
+  lastExtensionPollAt: number;
+  extensionPollIntervals: number[];
 };
 
-const VERSION = "0.13.0";
+type HostCalibration = {
+  measuredAt: number;
+  durationMs: number;
+  configuredWorkers: number;
+  connectedWorkers: number;
+  eventReadyWorkers: number;
+  recommendedWorkerCount: number;
+  averageExtensionGapMs: number | null;
+  maxExtensionGapMs: number | null;
+  freeMemoryMb: number;
+  stable: boolean;
+  summary: string;
+};
+
+const VERSION = "0.13.1";
+const BUILD_ID = "v0.13.1-beta.1";
 const BRIDGE_PROTOCOL_VERSION = "0.12.2";
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 const IDLE_POLL_INTERVAL_MS = 15_000;
 const CLOCK_SAMPLE_LIMIT = 8;
+const CALIBRATION_DURATION_MS = 4_000;
+const BROWSER_WATCHDOG_INTERVAL_MS = 10_000;
+const BROWSER_MISSING_GRACE_MS = 30_000;
+const BROWSER_RECOVERY_COOLDOWN_MS = 60_000;
+const BROWSER_RECOVERY_FREEZE_MS = 5 * 60_000;
+const RUN_RECOVERY_TAIL_MS = 2 * 60_000;
 const configFile = profileHostConfigPath();
 const config = JSON.parse(await readFile(configFile, "utf8")) as ProfileHostConfig;
 const port = Number(readOption("port", String(config.bridgePort || 4182)));
@@ -81,10 +110,21 @@ const runtimes = new Map<string, WorkerRuntime>(
       clockSamples: [],
       browserLaunchPromise: null,
       lastBrowserLaunchAt: 0,
+      browserExpected: false,
+      lastBrowserRecoveryAt: 0,
+      browserRecoveryState: "not-requested",
+      lastTargetUrl: "https://posh.vip/",
+      activeRunId: null,
+      activeRunReleaseAt: null,
+      lastExtensionPollAt: 0,
+      extensionPollIntervals: [],
     },
   ]),
 );
 let stopping = false;
+let hostCalibration: HostCalibration | null = null;
+let cachedHostResources: ReturnType<typeof hostResources> | null = null;
+let hostResourcesSampledAt = 0;
 
 function pageConnectedNow(runtime: WorkerRuntime) {
   return Date.now() - runtime.extensionSeenAt < 4_000;
@@ -107,6 +147,124 @@ function hostResources() {
     cpuCount: os.cpus().length,
     loadAverage1m: Number((os.loadavg()[0] ?? 0).toFixed(2)),
   };
+}
+
+function reportedHostResources() {
+  const timestamp = Date.now();
+  if (!cachedHostResources || timestamp - hostResourcesSampledAt >= 30_000) {
+    cachedHostResources = hostResources();
+    hostResourcesSampledAt = timestamp;
+  }
+  return cachedHostResources;
+}
+
+function recordExtensionPoll(runtime: WorkerRuntime, timestamp: number) {
+  if (runtime.lastExtensionPollAt > 0) {
+    const interval = timestamp - runtime.lastExtensionPollAt;
+    if (interval > 0 && interval < 10_000) {
+      runtime.extensionPollIntervals.push(interval);
+      if (runtime.extensionPollIntervals.length > 40) runtime.extensionPollIntervals.shift();
+    }
+  }
+  runtime.lastExtensionPollAt = timestamp;
+}
+
+function recommendedWorkerCount(resources: ReturnType<typeof hostResources>, maxGapMs: number | null) {
+  let recommendation = 4;
+  if (resources.totalMemoryMb < 8_000 || resources.cpuCount < 4) recommendation = 2;
+  else if (resources.totalMemoryMb < 12_000 || resources.cpuCount < 8) recommendation = 3;
+  if (resources.freeMemoryMb < 1_500) recommendation = Math.min(recommendation, 2);
+  else if (resources.freeMemoryMb < 2_500) recommendation = Math.min(recommendation, 3);
+  if (maxGapMs !== null && maxGapMs > 2_000) recommendation = Math.max(1, recommendation - 1);
+  return Math.min(config.workers.length, recommendation);
+}
+
+async function calibrateHost(): Promise<HostCalibration> {
+  for (const runtime of runtimes.values()) runtime.extensionPollIntervals.length = 0;
+  await new Promise((resolve) => setTimeout(resolve, CALIBRATION_DURATION_MS));
+
+  const resources = hostResources();
+  cachedHostResources = resources;
+  hostResourcesSampledAt = Date.now();
+  const connected = [...runtimes.values()].filter(extensionConnectedNow);
+  const eventReadyWorkers = [...runtimes.values()].filter(
+    (runtime) => pageConnectedNow(runtime) && runtime.extensionStatus.pageReady === true,
+  ).length;
+  const intervals = connected.flatMap((runtime) => runtime.extensionPollIntervals);
+  const averageExtensionGapMs = intervals.length
+    ? Math.round(intervals.reduce((total, interval) => total + interval, 0) / intervals.length)
+    : null;
+  const maxExtensionGapMs = intervals.length ? Math.max(...intervals) : null;
+  const recommendation = recommendedWorkerCount(resources, maxExtensionGapMs);
+  const stable =
+    connected.length === config.workers.length &&
+    eventReadyWorkers === config.workers.length &&
+    resources.freeMemoryMb >= 1_000 &&
+    maxExtensionGapMs !== null &&
+    maxExtensionGapMs <= 2_000;
+  const summary = stable
+    ? `${connected.length} workers responded steadily; use up to ${recommendation} on this host.`
+    : connected.length !== config.workers.length || eventReadyWorkers !== config.workers.length
+      ? `Open the event in every worker, then calibrate again. ${connected.length}/${config.workers.length} browsers and ${eventReadyWorkers}/${config.workers.length} event pages responded.`
+      : `Host pressure or browser delay was detected; use no more than ${recommendation} worker${recommendation === 1 ? "" : "s"}.`;
+
+  hostCalibration = {
+    measuredAt: Date.now(),
+    durationMs: CALIBRATION_DURATION_MS,
+    configuredWorkers: config.workers.length,
+    connectedWorkers: connected.length,
+    eventReadyWorkers,
+    recommendedWorkerCount: recommendation,
+    averageExtensionGapMs,
+    maxExtensionGapMs,
+    freeMemoryMb: resources.freeMemoryMb,
+    stable,
+    summary,
+  };
+  for (const runtime of runtimes.values()) scheduleHeartbeat(runtime, 0);
+  return hostCalibration;
+}
+
+function recoveryFrozen(runtime: WorkerRuntime, timestamp: number) {
+  if (!runtime.activeRunReleaseAt) return false;
+  const untilRelease = runtime.activeRunReleaseAt - timestamp;
+  return untilRelease <= BROWSER_RECOVERY_FREEZE_MS && untilRelease >= -RUN_RECOVERY_TAIL_MS;
+}
+
+async function runBrowserWatchdog() {
+  if (stopping) return;
+  const timestamp = Date.now();
+  await Promise.all([...runtimes.values()].map(async (runtime) => {
+    if (!runtime.browserExpected) {
+      runtime.browserRecoveryState = "not-requested";
+      return;
+    }
+    if (extensionConnectedNow(runtime)) {
+      runtime.browserRecoveryState = "watching";
+      return;
+    }
+    const lastSeenAt = Math.max(runtime.extensionSeenAt, runtime.backgroundSeenAt);
+    if (!lastSeenAt || timestamp - lastSeenAt < BROWSER_MISSING_GRACE_MS) {
+      runtime.browserRecoveryState = "waiting";
+      return;
+    }
+    if (recoveryFrozen(runtime, timestamp)) {
+      runtime.browserRecoveryState = "frozen-near-release";
+      return;
+    }
+    if (timestamp - runtime.lastBrowserRecoveryAt < BROWSER_RECOVERY_COOLDOWN_MS) {
+      runtime.browserRecoveryState = "cooldown";
+      return;
+    }
+    runtime.browserRecoveryState = "recovering";
+    runtime.lastBrowserRecoveryAt = timestamp;
+    try {
+      await ensureWorkerBrowser(runtime, runtime.lastTargetUrl, true);
+      console.log(`${runtime.worker.name}: watchdog reopened its missing Chrome worker.`);
+    } catch (error) {
+      console.error(`${runtime.worker.name}: watchdog recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }));
 }
 
 function updateClockEstimate(
@@ -191,6 +349,8 @@ async function acceptCommand(runtime: WorkerRuntime, command: ControllerCommand)
       typeof decryptedCommand.payload.startUrl === "string"
         ? decryptedCommand.payload.startUrl
         : "https://posh.vip/";
+    runtime.browserExpected = true;
+    runtime.lastTargetUrl = startUrl;
     const alreadyRunning = extensionConnectedNow(runtime);
     await ensureWorkerBrowser(runtime, startUrl, !alreadyRunning);
     await reportCommand(runtime, decryptedCommand, "worker-launched", { alreadyRunning });
@@ -212,7 +372,23 @@ async function acceptCommand(runtime: WorkerRuntime, command: ControllerCommand)
     return;
   }
 
+  if (decryptedCommand.type === "calibrate-host") {
+    console.log(`${config.hostName}: running a ${CALIBRATION_DURATION_MS / 1_000}-second local capacity check.`);
+    const calibration = await calibrateHost();
+    await reportCommand(runtime, decryptedCommand, "host-calibrated", { ...calibration });
+    console.log(`${config.hostName}: ${calibration.summary}`);
+    return;
+  }
+
   runtime.pendingCommand = decryptedCommand;
+  if (decryptedCommand.type === "open-event" && typeof decryptedCommand.payload.eventUrl === "string") {
+    runtime.lastTargetUrl = decryptedCommand.payload.eventUrl;
+  }
+  if (decryptedCommand.type === "arm-live") {
+    runtime.activeRunId = decryptedCommand.runId;
+    const releaseAt = Number(decryptedCommand.payload.releaseAt);
+    runtime.activeRunReleaseAt = Number.isFinite(releaseAt) ? releaseAt : null;
+  }
   console.log(`${runtime.worker.name}: received ${decryptedCommand.type} command ${decryptedCommand.id}.`);
   if (decryptedCommand.type === "open-event" && !extensionConnectedNow(runtime)) {
     const eventUrl =
@@ -248,12 +424,20 @@ async function heartbeat(runtime: WorkerRuntime) {
         bridgePort: port,
         pollIntervalMs,
         profileMode: "multi",
+        hostBuildId: BUILD_ID,
         hostId: config.hostId,
         hostName: config.hostName,
         workerId: runtime.worker.workerId,
         workerIndex: runtime.worker.workerIndex,
         workerCount: config.workers.length,
-        hostResources: hostResources(),
+        hostResources: reportedHostResources(),
+        hostCalibration,
+        browserWatchdog: {
+          enabled: true,
+          state: runtime.browserRecoveryState,
+          lastRecoveryAt: runtime.lastBrowserRecoveryAt || null,
+          frozenNearRelease: recoveryFrozen(runtime, Date.now()),
+        },
       },
     });
     updateClockEstimate(runtime, result.serverTime, requestStartedAt, Date.now());
@@ -354,10 +538,12 @@ app.get("/health", (_request, response) => {
   response.json({
     ok: true,
     version: VERSION,
+    buildId: BUILD_ID,
     hostId: config.hostId,
     hostName: config.hostName,
     port,
     resources: hostResources(),
+    calibration: hostCalibration,
     workers: [...runtimes.values()].map((runtime) => ({
       id: runtime.worker.workerId,
       name: runtime.worker.name,
@@ -367,16 +553,33 @@ app.get("/health", (_request, response) => {
       pageConnected: pageConnectedNow(runtime),
       pendingCommand: runtime.pendingCommand?.type ?? null,
       pollIntervalMs: desiredPollIntervalMs(runtime),
+      browserExpected: runtime.browserExpected,
+      browserRecoveryState: runtime.browserRecoveryState,
     })),
   });
 });
 
 app.post("/extension/poll", (request, response) => {
   const runtime = runtimeForRequest(request)!;
+  const timestamp = Date.now();
   const wasPageConnected = pageConnectedNow(runtime);
-  runtime.extensionSeenAt = Date.now();
+  recordExtensionPoll(runtime, timestamp);
+  runtime.extensionSeenAt = timestamp;
+  runtime.browserExpected = true;
+  runtime.browserRecoveryState = "watching";
   runtime.extensionStatus =
     request.body?.status && typeof request.body.status === "object" ? request.body.status : {};
+  const observedEventUrl = runtime.extensionStatus.eventUrl;
+  if (typeof observedEventUrl === "string") {
+    try {
+      const parsedEventUrl = new URL(observedEventUrl);
+      if (parsedEventUrl.protocol === "https:" && parsedEventUrl.hostname === "posh.vip" && parsedEventUrl.pathname.startsWith("/e/")) {
+        runtime.lastTargetUrl = parsedEventUrl.toString();
+      }
+    } catch {
+      // Keep the last controller-approved event URL when the page reports an invalid URL.
+    }
+  }
   if (!wasPageConnected) scheduleHeartbeat(runtime, 0);
   response.json({
     connected: runtime.controllerOnline,
@@ -395,6 +598,8 @@ app.post("/extension/poll", (request, response) => {
 app.post("/extension/navigation-poll", (request, response) => {
   const runtime = runtimeForRequest(request)!;
   runtime.backgroundSeenAt = Date.now();
+  runtime.browserExpected = true;
+  runtime.browserRecoveryState = "watching";
   runtime.backgroundControlEnabled = request.body?.controlEnabled !== false;
   scheduleHeartbeat(runtime, 0);
   response.json({
@@ -442,6 +647,23 @@ app.post("/extension/report", async (request, response) => {
     ) {
       runtime.pendingCommand = null;
     }
+    if (
+      runtime.activeRunId &&
+      runtime.activeRunId === request.body?.runId &&
+      [
+        "stopped",
+        "failed",
+        "inspection-complete",
+        "submitted",
+        "submitted-unconfirmed",
+        "confirmed",
+        "already-reserved",
+        "local-override",
+      ].includes(String(request.body?.phase))
+    ) {
+      runtime.activeRunId = null;
+      runtime.activeRunReleaseAt = null;
+    }
     response.json(result);
   } catch (error) {
     response.status(502).json({ error: error instanceof Error ? error.message : String(error) });
@@ -449,18 +671,22 @@ app.post("/extension/report", async (request, response) => {
 });
 
 const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`AUTOBOT profile host v${VERSION}: ${config.hostName}`);
+  console.log(`AUTOBOT profile host ${BUILD_ID}: ${config.hostName}`);
   console.log(`Local profile bridge: http://127.0.0.1:${port}`);
   console.log(`${config.workers.length} isolated Chrome workers configured.`);
 });
 
 await Promise.all([...runtimes.values()].map((runtime) => runHeartbeat(runtime)));
+const browserWatchdogTimer = setInterval(() => {
+  void runBrowserWatchdog();
+}, BROWSER_WATCHDOG_INTERVAL_MS);
 
 function shutdown() {
   stopping = true;
   for (const runtime of runtimes.values()) {
     if (runtime.heartbeatTimer) clearTimeout(runtime.heartbeatTimer);
   }
+  clearInterval(browserWatchdogTimer);
   server.close(() => process.exit(0));
 }
 

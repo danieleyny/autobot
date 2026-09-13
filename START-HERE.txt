@@ -1,5 +1,5 @@
-AUTOBOT v0.13.0 - CHOOSE A SETUP MODE
-======================================
+AUTOBOT v0.13.1-beta.1 - CHOOSE A SETUP MODE
+============================================
 
 CLASSIC: ONE POSH ACCOUNT ON THIS COMPUTER
 
@@ -65,7 +65,7 @@ automatic startup, and starts the device bridge.
 
 UPGRADING AN ALREADY CONNECTED LAPTOP
 -------------------------------------
-Run the new setup file from the extracted v0.13.0 folder. It keeps the saved
+Run the new setup file from the extracted v0.13.1 folder. It keeps the saved
 pairing and updates the startup path without asking for another code. Remove the
 old unpacked AUTOBOT extension in chrome://extensions, load the new extension
 folder, then restart the computer once. Do not remove or revoke the laptop in
@@ -99,7 +99,7 @@ Run:
 - Turn on Developer mode.
 - Click Load unpacked.
 - Select the extension folder inside the extracted autobot folder.
-- Confirm AUTOBOT Owned-Event RSVP Lab v0.13.0 appears.
+- Confirm AUTOBOT Owned-Event RSVP Lab v0.13.1 appears.
 
 
 6. PAIR THE COMPUTER

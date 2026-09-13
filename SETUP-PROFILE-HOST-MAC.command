@@ -2,7 +2,7 @@
 set -e
 cd "${0:A:h}"
 
-echo "AUTOBOT v0.13.0 Multi-Profile Host Setup"
+echo "AUTOBOT v0.13.1-beta.1 Multi-Profile Host Setup"
 echo "========================================"
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required. Install the current LTS release from https://nodejs.org and run this file again."

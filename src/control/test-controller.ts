@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { pbkdf2Sync } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import assert from "node:assert/strict";
 import {
   decryptForDevice,
@@ -21,6 +24,7 @@ const testPinHash = `pbkdf2-sha256:${testIterations}:${testSalt.toString("base64
 ).toString("base64url")}`;
 let server: ChildProcessWithoutNullStreams | null = null;
 let serverOutput = "";
+const testStateDirectory = await mkdtemp(path.join(os.tmpdir(), "autobot-controller-state-"));
 
 async function pinSignInCookie() {
   try {
@@ -81,7 +85,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.13.0-test",
+    version: "0.13.1-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -102,7 +106,7 @@ async function poll(
     "/api/device",
     {
       action: "poll",
-      version: "0.13.0-test",
+      version: "0.13.1-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -116,6 +120,8 @@ async function poll(
         eventTitle,
         pollIntervalMs: 15_000,
         profileMode: "multi",
+        hostBuildId: "v0.13.1-beta.1",
+        extensionBuildId: "v0.13.1-beta.1",
         hostId: "test-profile-host",
         hostName: "Test Profile Host",
         workerId: `worker-${token.slice(0, 6)}`,
@@ -141,6 +147,7 @@ try {
         ...process.env,
         AUTOBOT_PIN_HASH: testPinHash,
         AUTOBOT_SESSION_SECRET: "autobot-test-session-secret-32-bytes-minimum",
+        AUTOBOT_TEST_STATE_DIRECTORY: testStateDirectory,
         FORCE_COLOR: "0",
       },
       stdio: "pipe",
@@ -188,7 +195,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.13.0-test",
+      version: "0.13.1-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },
@@ -236,6 +243,24 @@ try {
     { action: "report", commandId: refreshCommand.id, phase: "host-refreshed" },
     { token: executorOne.token },
   );
+  await jsonRequest(
+    "/api/control",
+    { action: "calibrate-profile-host", deviceId: executorOne.id },
+    { cookie },
+  );
+  const calibrationPoll = await poll(executorOne.token, executorOne.keys, eventTitle);
+  const calibrationCommand = calibrationPoll.command as Record<string, unknown>;
+  assert.equal(calibrationCommand.type, "calibrate-host");
+  await jsonRequest(
+    "/api/device",
+    {
+      action: "report",
+      commandId: calibrationCommand.id,
+      phase: "host-calibrated",
+      detail: { recommendedWorkerCount: 2, stable: true },
+    },
+    { token: executorOne.token },
+  );
 
   await jsonRequest(
     "/api/control",
@@ -259,7 +284,8 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
-  assert.equal(directoryState.controllerRevision, "0.13.0");
+  assert.equal(directoryState.controllerRevision, "v0.13.1-beta.1");
+  assert.equal(directoryState.expectedBuildId, "v0.13.1-beta.1");
   const firstSeenAt = Number(directoryDevice?.lastSeenAt);
   await poll(executorOne.token, executorOne.keys, eventTitle);
   const duplicateState = await jsonRequest("/api/control", null, { cookie });
@@ -328,7 +354,28 @@ try {
     { cookie, expectedStatus: 400 },
   );
   assert.match(String(hiddenTabResult.error), /visible/i);
-  await poll(executorOne.token, executorOne.keys, eventTitle, { pageVisible: true });
+  await poll(executorOne.token, executorOne.keys, eventTitle, {
+    pageVisible: true,
+    extensionBuildId: "stale-beta-build",
+  });
+  const mixedBuildResult = await jsonRequest(
+    "/api/control",
+    {
+      action: "arm-run",
+      runId,
+      deviceIds: [executorOne.id, executorTwo.id],
+      confirmEventTitle: eventTitle,
+      firstSlotCount: 1,
+      encryptedSecrets: {
+        [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
+        [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
+      },
+    },
+    { cookie, expectedStatus: 400 },
+  );
+  assert.match(String(mixedBuildResult.error), /exact.*build/i);
+  await poll(executorOne.token, executorOne.keys, eventTitle, { pageVisible: true, workerIndex: 1 });
+  await poll(executorTwo.token, executorTwo.keys, eventTitle, { pageVisible: true, workerIndex: 2 });
   await jsonRequest(
     "/api/control",
     {
@@ -372,6 +419,13 @@ try {
   assert.equal(executorOnePayload.releaseAt, executorTwoPayload.releaseAt);
   assert.ok(Number(executorOnePayload.prepareAt) <= Number(executorTwoPayload.prepareAt));
   assert.ok(Number(executorTwoPayload.prepareAt) < Number(executorTwoPayload.releaseAt));
+  assert.equal(
+    Number(executorOnePayload.prepareDeadlineAt),
+    Number(executorOnePayload.releaseAt) - 10_000,
+  );
+  assert.equal(executorOnePayload.prepareDeadlineAt, executorTwoPayload.prepareDeadlineAt);
+  assert.equal(executorOnePayload.preparationIndex, 1);
+  assert.equal(executorTwoPayload.preparationIndex, 2);
   assert.equal(executorOnePayload.fleetSize, 2);
   assert.equal(executorOnePayload.ticketStrategy, "first");
   assert.equal(executorTwoPayload.ticketStrategy, "second");
@@ -545,5 +599,10 @@ try {
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
   console.log("Control integration passed: profile-host launch/refresh, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
 } finally {
-  if (server && !server.killed) server.kill("SIGTERM");
+  if (server && !server.killed) {
+    const exited = new Promise<void>((resolve) => server!.once("exit", () => resolve()));
+    server.kill("SIGTERM");
+    await exited;
+  }
+  await rm(testStateDirectory, { recursive: true, force: true });
 }

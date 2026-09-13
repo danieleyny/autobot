@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { singleFlight, startDashboardPolling } from "./dashboard-polling";
+import { AUTOBOT_BUILD_ID, profileBuildMatches } from "./release";
 
 type Device = {
   id: string;
@@ -54,6 +55,7 @@ type RunDevice = {
 };
 
 type ControlState = {
+  expectedBuildId: string;
   devices: Device[];
   runs: Run[];
   leases: Array<Record<string, unknown>>;
@@ -76,6 +78,7 @@ type PreflightCheck = {
 };
 
 const emptyState: ControlState = {
+  expectedBuildId: AUTOBOT_BUILD_ID,
   devices: [],
   runs: [],
   leases: [],
@@ -86,7 +89,7 @@ const emptyState: ControlState = {
 
 const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
 const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/latest";
-const PROFILE_HOST_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/tag/v0.13.0-beta";
+const PROFILE_HOST_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/tag/v0.13.1-beta";
 
 function versionAtLeast(version: string, required: [number, number, number]) {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
@@ -131,6 +134,7 @@ function readinessIssue(device: Device, eventUrl: string, eventTitle: string) {
   if (!device.online) return "Offline";
   if (device.mode !== "managed" || device.state.controlConnected !== true) return "Controller disabled";
   if (!supportsFastRelease(device.version)) return "Update to v0.12.2";
+  if (!profileBuildMatches(device.state)) return `Build mismatch — install ${AUTOBOT_BUILD_ID}`;
   if (!device.encryptionReady) return "Password security not ready";
   if (device.state.pageReady !== true) return "Open the event page";
   if (device.state.pageVisible !== true) return "Bring the event tab to the front";
@@ -177,6 +181,8 @@ function deviceSummary(device: Device) {
   const armed = device.state.armed === true;
   const prepared = device.state.prepared === true;
   if (!device.online) return "Offline";
+  if (!profileBuildMatches(device.state)) return "Build mismatch";
+  if (device.state.preparationLate === true) return "Preparation late";
   if (prepared) return "Prepared";
   if (armed) return "Armed";
   if (pageReady) return "Event ready";
@@ -240,11 +246,12 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     });
     setSelected((current) => current.filter((id) => next.devices.some((device) => device.id === id && device.online)));
     setLoading(false);
+    return next;
   }, []);
   const refresh = useMemo(() => singleFlight(refreshState), [refreshState]);
 
   useEffect(() => {
-    return startDashboardPolling(refresh, document, window, (error) => {
+    return startDashboardPolling(async () => { await refresh(); }, document, window, (error) => {
       setNotice(error instanceof Error ? error.message : String(error));
       setLoading(false);
     });
@@ -277,6 +284,9 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const onlineDevices = state.devices.filter((device) => device.online);
   const pendingDevices = state.devices.filter((device) => device.approvalStatus === "pending");
   const outdatedDevices = state.devices.filter((device) => !supportsFastRelease(device.version));
+  const buildMismatchDevices = state.devices.filter(
+    (device) => device.state.profileMode === "multi" && !profileBuildMatches(device.state),
+  );
   const profileWorkers = state.devices.filter((device) => device.state.profileMode === "multi");
   const profileHostGroups = [...profileWorkers.reduce((groups, worker) => {
     const hostId = typeof worker.state.hostId === "string" ? worker.state.hostId : "unknown-host";
@@ -300,6 +310,13 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const secondSlotDevices = selectedDevices.slice(firstSlotCount);
   const readySelectedDevices = selectedDevices.filter((device) => !readinessIssue(device, eventUrl, eventTitle));
   const preparedSelectedDevices = selectedDevices.filter((device) => device.state.prepared === true);
+  const latePreparationDevices = selectedDevices.filter((device) => {
+    const preparedAt = Number(device.state.preparedAt);
+    const deadlineAt = Number(device.state.prepareDeadlineAt);
+    return device.state.preparationLate === true || (
+      Number.isFinite(preparedAt) && Number.isFinite(deadlineAt) && preparedAt > deadlineAt
+    );
+  });
   const latestRunDevices = latestRun
     ? state.runDevices.filter((device) => device.run_id === latestRun.id)
     : [];
@@ -368,15 +385,18 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       const issue = readinessIssue(device, eventUrl, eventTitle);
       const deviceClockOffset = Math.abs(Number(device.state.clockOffsetMs ?? 0));
       const deviceRoundTrip = Number(device.state.clockRoundTripMs ?? 0);
+      const checkInAgeMs = device.lastSeenAt ? state.serverTime - device.lastSeenAt : Number.POSITIVE_INFINITY;
       checks.push({
         id: `device-${device.id}`,
         label: device.name,
-        detail: issue || (deviceClockOffset > 750
+        detail: issue || (checkInAgeMs > 8_000
+          ? `Ready, but its active check-in is ${Math.ceil(checkInAgeMs / 1_000)} seconds old.`
+          : deviceClockOffset > 750
           ? `Ready, but its clock differs by ${Math.round(deviceClockOffset)}ms.`
           : deviceRoundTrip > 1_000
             ? `Ready, but controller latency is ${Math.round(deviceRoundTrip)}ms.`
             : "Online, current, encrypted and on the correct visible event page."),
-        status: issue ? "fail" : deviceClockOffset > 750 || deviceRoundTrip > 1_000 ? "warn" : "pass",
+        status: issue ? "fail" : checkInAgeMs > 8_000 || deviceClockOffset > 750 || deviceRoundTrip > 1_000 ? "warn" : "pass",
       });
     }
     for (const host of selectedProfileHosts) {
@@ -401,6 +421,22 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   })();
   const failedPreflightChecks = preflightChecks.filter((check) => check.status === "fail").length;
   const warningPreflightChecks = preflightChecks.filter((check) => check.status === "warn").length;
+  const selectedProfileWorkers = selectedDevices.filter((device) => device.state.profileMode === "multi");
+  const selectedProfileBrowsersReady = selectedProfileWorkers.every(
+    (device) => device.state.extensionConnected === true,
+  );
+  const selectedEventPagesReady = selectedDevices.length > 0 && selectedDevices.every(
+    (device) =>
+      device.state.pageReady === true &&
+      sameEventPage(device.state.eventUrl, eventUrl) &&
+      typeof device.state.eventTitle === "string" &&
+      device.state.eventTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase() ===
+        eventTitle.replace(/\s+/g, " ").trim().toLocaleLowerCase(),
+  );
+  const systemCheckCurrent =
+    preflightRanAt !== null &&
+    state.serverTime - preflightRanAt <= 60_000 &&
+    failedPreflightChecks === 0;
 
   const post = async (payload: Record<string, unknown>) => {
     const response = await fetch("/api/control", {
@@ -734,6 +770,30 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
   };
 
+  const launchSelectedProfileWorkers = async () => {
+    const targets = selectedDevices.filter(
+      (device) =>
+        device.state.profileMode === "multi" &&
+        device.online &&
+        device.approvalStatus === "approved",
+    );
+    if (!targets.length) {
+      setNotice("The selected fleet has no online profile workers to launch.");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "launch-workers", deviceIds: targets.map((device) => device.id) });
+      setNotice(`Opening ${targets.length} selected profile worker${targets.length === 1 ? "" : "s"} in a protected sequence.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const launchSingleProfileWorker = async (worker: Device) => {
     if (!worker.online || worker.approvalStatus !== "approved") {
       setNotice(`${worker.name} is offline or awaiting approval.`);
@@ -788,12 +848,33 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
   };
 
+  const calibrateProfileHost = async (host: ProfileHostGroup) => {
+    const representative = host.workers.find(
+      (worker) => worker.online && worker.approvalStatus === "approved",
+    );
+    if (!representative) {
+      setNotice(`${host.name}'s bridge is offline or awaiting approval.`);
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      await post({ action: "calibrate-profile-host", deviceId: representative.id });
+      setNotice(`${host.name} is measuring browser response gaps and available capacity for four seconds.`);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runSystemCheck = async () => {
     setBusy(true);
     setNotice("");
     try {
-      await refresh();
-      setPreflightRanAt(state.serverTime);
+      const checkedState = await refresh();
+      setPreflightRanAt(checkedState.serverTime);
       setNotice("System check refreshed. Review the pass, warning and fix-required results below.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -894,6 +975,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           </div>
           <div className="flex items-center gap-3 text-xs">
             <span className="hidden text-[#aab4a9] sm:block">{relativeClock}</span>
+            <span className="hidden rounded-full border border-[#475149] px-3 py-1.5 font-mono text-[10px] text-[#cbd4cc] md:block">{state.expectedBuildId || AUTOBOT_BUILD_ID}</span>
             <span className="h-2.5 w-2.5 rounded-full bg-[#b8ff5a] shadow-[0_0_0_4px_rgb(184_255_90/12%)]" />
             <span className="hidden max-w-40 truncate rounded-full border border-[#475149] px-3 py-1.5 font-semibold sm:block">{operatorName}</span>
             <form action="/api/auth/logout" method="post">
@@ -954,7 +1036,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
       <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#c9d4c4] bg-white px-4 py-3 text-sm text-[#4f5b51]">
-          <span>This is the isolated v0.13 acceptance dashboard. The working v0.12.2 system remains untouched.</span>
+          <span>This is the isolated v0.13.1 beta dashboard. The working v0.12.2 system remains untouched.</span>
           <a href="https://autobot-command-center.avgschnook.chatgpt.site" target="_blank" rel="noreferrer" className="rounded-full border border-[#cbd2c7] px-3 py-1.5 text-xs font-bold text-[#344132]">
             Open production fallback
           </a>
@@ -966,6 +1048,17 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e3c6a5] bg-[#fff9f1] px-4 py-3 text-sm text-[#6f4a20]">
         <span>{outdatedDevices.length} laptop{outdatedDevices.length === 1 ? " needs" : "s need"} the v0.12.2 prepared-release update before the next live activation.</span>
             <a href={CURRENT_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download current release</a>
+          </div>
+        </div>
+      ) : null}
+
+      {buildMismatchDevices.length > 0 ? (
+        <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e6bfb4] bg-[#fff4f1] px-4 py-3 text-sm text-[#7c4033]">
+            <span>
+              {buildMismatchDevices.length} profile worker{buildMismatchDevices.length === 1 ? " has" : "s have"} mixed host/extension files. Live activation is blocked until every selected worker shows {state.expectedBuildId || AUTOBOT_BUILD_ID}.
+            </span>
+            <a href={PROFILE_HOST_RELEASE_URL} target="_blank" rel="noreferrer" className="rounded-full bg-[#172018] px-3 py-1.5 text-xs font-bold text-white">Download exact beta build</a>
           </div>
         </div>
       ) : null}
@@ -1148,6 +1241,45 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 <p className="text-2xl font-semibold">{latestIssues}</p>
                 <p className="mt-1 text-xs font-bold uppercase tracking-[0.1em]">Issues</p>
               </div>
+            </div>
+          </article>
+
+          <article className="rounded-2xl border border-[#c9d4c4] bg-[#f8fbf4] p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="eyebrow">Guided event-day workflow</p>
+                <h2 className="mt-1 text-xl font-semibold">One controlled path from setup to activation</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-[#69736b]">
+                  Complete these checks in order. Rehearsal and live activation remain separate deliberate actions in the run card below.
+                </p>
+              </div>
+              {!selected.length ? (
+                <button type="button" disabled={busy || configurationLocked} onClick={selectOnlineDevices} className="rounded-full bg-[#172018] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-40">Start: select online fleet</button>
+              ) : !selectedProfileBrowsersReady ? (
+                <button type="button" disabled={busy || Boolean(activeRun)} onClick={launchSelectedProfileWorkers} className="rounded-full bg-[#172018] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-40">Next: launch selected profiles</button>
+              ) : !selectedEventPagesReady ? (
+                <button type="button" disabled={busy || configurationLocked || Boolean(activeRun) || !validEventUrl(eventUrl)} onClick={openEventOnSelected} className="rounded-full bg-[#172018] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-40">Next: open event everywhere</button>
+              ) : !systemCheckCurrent ? (
+                <button type="button" disabled={busy} onClick={runSystemCheck} className="rounded-full bg-[#172018] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-40">Next: run fresh system check</button>
+              ) : !configurationLocked ? (
+                <button type="button" disabled={busy || Boolean(activeRun)} onClick={toggleConfigurationLock} className="rounded-full bg-[#172018] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-40">Next: lock configuration</button>
+              ) : (
+                <span className="rounded-full bg-[#dff4c4] px-4 py-2.5 text-xs font-bold text-[#35511e]">Ready for rehearsal or live activation</span>
+              )}
+            </div>
+            <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              {[
+                { label: "1. Fleet selected", done: selected.length > 0, detail: `${selected.length} selected` },
+                { label: "2. Browsers open", done: selectedProfileBrowsersReady, detail: selectedProfileWorkers.length ? `${selectedProfileWorkers.filter((device) => device.state.extensionConnected === true).length}/${selectedProfileWorkers.length} profile workers` : "Classic fleet" },
+                { label: "3. Event verified", done: selectedEventPagesReady, detail: selectedEventPagesReady ? "Correct page everywhere" : "Open and verify event" },
+                { label: "4. Check current", done: systemCheckCurrent, detail: preflightRanAt ? `${failedPreflightChecks} failures · ${warningPreflightChecks} warnings` : "Not run" },
+                { label: "5. Setup locked", done: configurationLocked, detail: configurationLocked ? "Protected from edits" : "Lock after review" },
+              ].map((step) => (
+                <div key={step.label} className={`rounded-xl border p-3 ${step.done ? "border-[#c9dbb6] bg-white" : "border-[#e1d4ba] bg-[#fffaf0]"}`}>
+                  <p className="text-xs font-bold">{step.done ? "✓ " : "○ "}{step.label}</p>
+                  <p className="mt-1 text-[11px] text-[#69736b]">{step.detail}</p>
+                </div>
+              ))}
             </div>
           </article>
 
@@ -1356,6 +1488,15 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                 </div>
               )}
 
+              {activeRun?.mode === "live" && latePreparationDevices.length > 0 ? (
+                <div className="mt-3 rounded-xl border border-[#e6bfb4] bg-[#fff4f1] p-4 text-[#7c4033]">
+                  <p className="text-sm font-semibold">Preparation deadline warning</p>
+                  <p className="mt-1 text-xs leading-5">
+                    {latePreparationDevices.map((device) => device.name).join(", ")} {latePreparationDevices.length === 1 ? "has" : "have"} not prepared at least ten seconds before release. Stop the run and remove or repair those workers if there is still time; the controller will not silently reassign their one-use leases.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="mt-6 flex flex-wrap gap-3">
                 <button disabled={busy || Boolean(activeRun) || selected.length === 0} onClick={launchRun} className={`rounded-full px-5 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${mode === "live" ? "bg-[#b8ff5a] text-[#172018]" : "bg-[#172018] text-white"}`}>
                   {busy ? "Working…" : mode === "live" ? `Prepare + activate ${selected.length || "selected"} device${selected.length === 1 ? "" : "s"}` : "Run fleet rehearsal"}
@@ -1426,6 +1567,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                                   ? "Slot 2"
                                   : "Any"
                               : "—"}
+                            {Number(device.state.preparationIndex) > 0 ? ` · Prep #${Number(device.state.preparationIndex)}` : ""}
                           </td>
                           <td className="py-3 capitalize text-[#59645b]">{runStatus ? runStatus.replaceAll("-", " ") : "Not included"}</td>
                           <td className="py-3 font-mono text-xs text-[#657066]">{device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleTimeString() : "Never"}</td>
@@ -1511,6 +1653,18 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   const sampleResources = host.workers.find(
                     (worker) => worker.state.hostResources && typeof worker.state.hostResources === "object",
                   )?.state.hostResources as Record<string, unknown> | undefined;
+                  const calibration = host.workers.find(
+                    (worker) => worker.state.hostCalibration && typeof worker.state.hostCalibration === "object",
+                  )?.state.hostCalibration as Record<string, unknown> | undefined;
+                  const exactBuildWorkers = host.workers.filter((worker) => profileBuildMatches(worker.state));
+                  const frozenRecoveryWorkers = host.workers.filter((worker) => {
+                    const watchdog = worker.state.browserWatchdog;
+                    return Boolean(
+                      watchdog &&
+                      typeof watchdog === "object" &&
+                      (watchdog as Record<string, unknown>).frozenNearRelease === true,
+                    );
+                  });
                   const lastCheckInAt = Math.max(...host.workers.map((worker) => worker.lastSeenAt || 0));
                   const clockOffsets = host.workers
                     .map((worker) => Math.abs(Number(worker.state.clockOffsetMs ?? 0)))
@@ -1541,6 +1695,20 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                           <p className="mt-1 font-mono text-xs text-[#7a837b]">
                             Last check-in {lastCheckInAt ? new Date(lastCheckInAt).toLocaleTimeString() : "never"} · max clock offset {Math.round(Math.max(0, ...clockOffsets))}ms · max latency {Math.round(Math.max(0, ...roundTrips))}ms
                           </p>
+                          <p className={`mt-1 font-mono text-xs ${exactBuildWorkers.length === host.workers.length ? "text-[#55723b]" : "text-[#a4513d]"}`}>
+                            Build {exactBuildWorkers.length}/{host.workers.length} exact · watchdog active{frozenRecoveryWorkers.length ? ` · recovery frozen near release for ${frozenRecoveryWorkers.length}` : ""}
+                          </p>
+                          {calibration ? (
+                            <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${calibration.stable === true ? "bg-[#eaf4d9] text-[#35511e]" : "bg-[#fff0d9] text-[#79501f]"}`}>
+                              <p className="font-semibold">Calibration recommends up to {String(calibration.recommendedWorkerCount ?? "—")} worker{Number(calibration.recommendedWorkerCount) === 1 ? "" : "s"}</p>
+                              <p className="mt-1 leading-5">{String(calibration.summary || "Capacity check complete.")}</p>
+                              <p className="mt-1 font-mono text-[10px] opacity-80">
+                                {calibration.averageExtensionGapMs ? `avg ${String(calibration.averageExtensionGapMs)}ms · ` : ""}
+                                {calibration.maxExtensionGapMs ? `max ${String(calibration.maxExtensionGapMs)}ms · ` : ""}
+                                {calibration.measuredAt ? new Date(Number(calibration.measuredAt)).toLocaleTimeString() : ""}
+                              </p>
+                            </div>
+                          ) : null}
                           {memoryConstrained ? (
                             <p className="mt-2 rounded-lg bg-[#fff0d9] px-3 py-2 text-xs font-semibold text-[#79501f]">
                               Four workers may strain this host. Close other apps or select three workers for a faster release.
@@ -1556,6 +1724,9 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                           </button>
                           <button type="button" disabled={busy} onClick={() => refreshProfileHost(host)} className="rounded-full border border-[#cbd2c7] bg-white px-4 py-2 text-xs font-bold text-[#4d594f] disabled:opacity-40">
                             Refresh bridge
+                          </button>
+                          <button type="button" disabled={busy || Boolean(activeRun) || connectedBrowsers.length !== host.workers.length || eventReadyWorkers.length !== host.workers.length || exactBuildWorkers.length !== host.workers.length} onClick={() => calibrateProfileHost(host)} className="rounded-full border border-[#9db879] bg-white px-4 py-2 text-xs font-bold text-[#35511e] disabled:opacity-40">
+                            Calibrate host
                           </button>
                           <button type="button" disabled={busy} onClick={() => resetProfileWorkers(host)} className="rounded-full border border-[#d7a797] bg-white px-4 py-2 text-xs font-bold text-[#8b4f3f] disabled:opacity-40">
                             Reset host workers

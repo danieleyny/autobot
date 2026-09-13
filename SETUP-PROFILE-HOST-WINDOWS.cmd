@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo AUTOBOT v0.13.0 Multi-Profile Host Setup
+echo AUTOBOT v0.13.1-beta.1 Multi-Profile Host Setup
 echo ========================================
 where node >nul 2>nul
 if errorlevel 1 (

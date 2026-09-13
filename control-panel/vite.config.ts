@@ -62,6 +62,9 @@ export default defineConfig(async ({ command }) => {
       cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
         config: { ...localBindingConfig, vars: localSecrets },
+        persistState: process.env.AUTOBOT_TEST_STATE_DIRECTORY
+          ? { path: process.env.AUTOBOT_TEST_STATE_DIRECTORY }
+          : true,
       }),
     ],
   };

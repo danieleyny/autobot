@@ -2,7 +2,8 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.13.0";
+  const VERSION = "0.13.1";
+  const BUILD_ID = "v0.13.1-beta.1";
   const STATE_KEY = `autobot:${location.pathname}`;
   const TIMELINE_KEY = `autobot-timeline:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
@@ -78,7 +79,7 @@
       .control-copy { display: flex; align-items: center; gap: 7px; min-width: 0; }
     </style>
     <section class="panel" aria-label="AUTOBOT classroom control">
-      <h2>AUTOBOT RSVP Lab <small>v0.13.0</small></h2>
+      <h2>AUTOBOT RSVP Lab <small>${BUILD_ID}</small></h2>
       <p class="sub">Organizer-owned event · one ticket · visible browser</p>
 
       <label for="event-title">Exact event title</label>
@@ -202,8 +203,11 @@
   }
 
   function deviceControlStatus() {
+    const prepareDeadlineAt = Number(activeControlCommand?.payload?.prepareDeadlineAt);
+    const preparedAt = Number(activeControlCommand?.preparedAt);
     return {
       extensionVersion: VERSION,
+      extensionBuildId: BUILD_ID,
       controlEnabled: Boolean(allowControl.checked),
       pageReady: Boolean(normalize(document.title)),
       pageVisible: document.visibilityState === "visible",
@@ -216,6 +220,14 @@
       armed: Boolean(armButton.disabled),
       executing: Boolean(activeControlCommand?.executionStarted),
       prepared: Boolean(activeControlCommand?.prepared),
+      preparationLate:
+        activeControlCommand?.type === "arm-live" &&
+        Number.isFinite(prepareDeadlineAt) &&
+        !activeControlCommand?.prepared &&
+        synchronizedNow() > prepareDeadlineAt,
+      preparationIndex: Number(activeControlCommand?.payload?.preparationIndex) || null,
+      prepareDeadlineAt: Number.isFinite(prepareDeadlineAt) ? prepareDeadlineAt : null,
+      preparedAt: Number.isFinite(preparedAt) ? preparedAt : null,
       preparedTicketName: activeControlCommand?.preparedTicketName || null,
       commandId: activeControlCommand?.id || null,
       runId: activeControlCommand?.runId || null,
@@ -608,7 +620,14 @@
     );
   }
 
-  async function openTicketPicker() {
+  function preparationTimeout(requestedMs, deadlineAt, description) {
+    if (!Number.isFinite(deadlineAt)) return requestedMs;
+    const remaining = deadlineAt - synchronizedNow();
+    if (remaining <= 0) throw new Error(`Preparation deadline passed before ${description}.`);
+    return Math.max(1, Math.min(requestedMs, remaining));
+  }
+
+  async function openTicketPicker(deadlineAt = null) {
     if (visibleTicketDialog()) {
       log("Ticket selector is already open.");
       return;
@@ -619,7 +638,7 @@
         if (visibleTicketDialog()) return "open";
         const matches = exactButton("RSVP", "Get Tickets");
         return matches.length === 1 ? matches : null;
-      }, attempt === 1 ? 10_000 : 5_000, "one RSVP/Get Tickets control");
+      }, preparationTimeout(attempt === 1 ? 10_000 : 5_000, deadlineAt, "the RSVP control appeared"), "one RSVP/Get Tickets control");
       if (buttons === "open") {
         log("Ticket selector is already open.");
         return;
@@ -637,7 +656,7 @@
             return "replaced";
           }
           return null;
-        }, 5_000, "the ticket dialog");
+        }, preparationTimeout(5_000, deadlineAt, "the ticket selector opened"), "the ticket dialog");
         if (clickResult === "open") {
           log(attempt === 1 ? "Ticket selector opened." : "Ticket selector opened after one safe retry.");
           return;
@@ -738,8 +757,24 @@
   }
 
   async function prepareTicketSelector(config) {
-    await openTicketPicker();
-    const resolved = await resolveTicketForStrategy(config);
+    const configuredDeadline =
+      typeof config.prepareDeadlineAt === "number" ? config.prepareDeadlineAt : Number.NaN;
+    const deadlineAt = Number.isFinite(configuredDeadline) && config.allowLatePreparation !== true
+      ? configuredDeadline
+      : null;
+    let resolved;
+    try {
+      await openTicketPicker(deadlineAt);
+      resolved = await resolveTicketForStrategy(
+        config,
+        preparationTimeout(8_000, deadlineAt, "the assigned free RSVP appeared")
+      );
+    } catch (error) {
+      if (Number.isFinite(deadlineAt) && synchronizedNow() >= deadlineAt) {
+        throw new Error(`Preparation deadline passed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      throw error;
+    }
     const completed = (await chrome.storage.local.get(completionKey(resolved.ticketName)))[
       completionKey(resolved.ticketName)
     ];
@@ -755,10 +790,15 @@
     config.preparedAt = synchronizedNow();
     if (activeControlCommand) {
       activeControlCommand.prepared = true;
+      activeControlCommand.preparedAt = config.preparedAt;
       activeControlCommand.preparedTicketName = resolved.ticketName;
       void controlReport(activeControlCommand, "prepared", {
         ticketName: resolved.ticketName,
-        ticketStrategy: config.ticketStrategy
+        ticketStrategy: config.ticketStrategy,
+        preparedAt: config.preparedAt,
+        prepareDeadlineAt: Number.isFinite(configuredDeadline) ? configuredDeadline : null,
+        preparationLeadMs: config.releaseAt - config.preparedAt,
+        preparationLate: Number.isFinite(configuredDeadline) && config.preparedAt > configuredDeadline
       }).catch(() => {});
     }
     traceStep("prepared", {
@@ -1119,6 +1159,7 @@
     const releaseValue = $("#release-at").value;
     const commandedReleaseAt = Number(activeControlCommand?.payload?.releaseAt);
     const commandedPrepareAt = Number(activeControlCommand?.payload?.prepareAt);
+    const commandedPrepareDeadlineAt = Number(activeControlCommand?.payload?.prepareDeadlineAt);
     const releaseAt = Number.isFinite(commandedReleaseAt)
       ? commandedReleaseAt
       : releaseValue
@@ -1135,6 +1176,7 @@
       eventPassword: $("#event-password").value,
       releaseAt,
       prepareAt: Number.isFinite(commandedPrepareAt) ? commandedPrepareAt : synchronizedNow(),
+      prepareDeadlineAt: Number.isFinite(commandedPrepareDeadlineAt) ? commandedPrepareDeadlineAt : null,
       releaseConfigured: Boolean(releaseValue),
       retryGate: $("#release-gate").checked,
       execute: $("#execute").checked,
@@ -1236,7 +1278,10 @@
         const safeState = {
           ...config,
           eventPassword: "",
-          gateRetrying: false
+          gateRetrying: false,
+          allowLatePreparation:
+            Number.isFinite(Number(config.prepareDeadlineAt)) &&
+            synchronizedNow() >= Number(config.prepareDeadlineAt)
         };
         await waitForEventHeading(safeState);
         assertEvent(safeState);

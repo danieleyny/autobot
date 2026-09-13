@@ -12,7 +12,7 @@ import {
 } from "./profile-host-options.js";
 import { normalizeControllerUrl, readOption } from "./options.js";
 
-const VERSION = "0.13.0";
+const VERSION = "0.13.1";
 const DEFAULT_BRIDGE_PORT = 4182;
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const sourceExtensionDirectory = path.join(projectRoot, "extension");

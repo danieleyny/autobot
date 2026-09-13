@@ -7,7 +7,7 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.13.0
+## Optional Command Center in v0.13.1
 
 The normal panel remains fully standalone. If the local v0.12.2-or-newer device bridge is
 running, the bottom of the panel shows the paired device name and a green
@@ -27,7 +27,7 @@ password separately with each device's public key, and only that device's local
 bridge decrypts it. The controller never receives a readable password. POSH
 login, OTP, Cloudflare, browser sessions, and completion locks remain local.
 
-v0.13.0 also supports the optional secondary multi-profile host. Its setup
+v0.13.1 also supports the optional secondary multi-profile host. Its setup
 assistant creates a private numbered copy of this extension for every isolated
 Chrome worker. Load only the numbered path printed for that profile; do not load
 the ordinary package `extension` folder into a profile worker. Classic mode is
@@ -78,6 +78,13 @@ before release. It does not change ticket quantity during this preparation.
 The prepared card is revalidated at release and rescanned if POSH replaced it.
 Hiding the event tab stops the managed run so Chrome background throttling
 cannot silently delay the local clock.
+
+The controller interleaves preparation across physical hosts so one computer is
+not asked to prepare all of its profiles at once. Every profile reports the
+exact beta build and must complete preparation before the controller-issued
+deadline. The host can run a short local capacity calibration, and its browser
+watchdog can reopen a missing numbered worker outside the protected release
+window.
 
 If the release-gate option is unchecked, the helper unlocks and validates the
 event first, waits without refreshing, selects exactly one matching free ticket,
