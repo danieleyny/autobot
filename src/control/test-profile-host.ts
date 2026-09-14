@@ -107,7 +107,7 @@ assert.notEqual(config.workers[0]!.workerId, originalWorkerOneId);
 assert.equal(config.workers[0]!.profileDirectory, originalWorkerOneProfile);
 assert.equal(config.workers[1]!.workerId, originalWorkerTwoId);
 
-const child = spawn(process.execPath, [tsxCli, agentScript, `--host-config=${configFile}`, `--port=${bridgePort}`], {
+const child = spawn(process.execPath, [tsxCli, agentScript, `--host-config=${configFile}`, `--port=${bridgePort}`, "--calibration-ms=1000"], {
   cwd: path.resolve("."),
   stdio: "pipe",
 });
@@ -223,10 +223,20 @@ try {
     while (feedCalibration) {
       await Promise.all([
         extensionRequest(config.workers[0]!, "/extension/poll", {
-          status: { pageReady: true, controlEnabled: true, extensionBuildId: "v0.13.1-beta.1" },
+          status: {
+            pageReady: true,
+            controlEnabled: true,
+            extensionBuildId: "v0.13.2-beta.1",
+            performanceSample: { measuredAt: Date.now(), frameGapMs: 16.7, domScanMs: 2.1 },
+          },
         }),
         extensionRequest(config.workers[1]!, "/extension/poll", {
-          status: { pageReady: true, controlEnabled: true, extensionBuildId: "v0.13.1-beta.1" },
+          status: {
+            pageReady: true,
+            controlEnabled: true,
+            extensionBuildId: "v0.13.2-beta.1",
+            performanceSample: { measuredAt: Date.now(), frameGapMs: 17.1, domScanMs: 2.4 },
+          },
         }),
       ]);
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -248,10 +258,17 @@ try {
   assert.equal(calibrationReport.detail?.connectedWorkers, 2);
   assert.equal(calibrationReport.detail?.eventReadyWorkers, 2);
   assert.equal(typeof calibrationReport.detail?.recommendedWorkerCount, "number");
+  assert.equal(typeof calibrationReport.detail?.p95HostEventLoopLagMs, "number");
+  assert.equal(typeof calibrationReport.detail?.p95FrameGapMs, "number");
+  assert.equal(typeof calibrationReport.detail?.p95DomScanMs, "number");
+  const localPerformanceReport = JSON.parse(
+    await readFile(path.join(temporaryDirectory, "profile-host-performance.json"), "utf8"),
+  ) as Record<string, unknown>;
+  assert.equal(localPerformanceReport.localOnly, true);
   const healthResponse = await fetch(`http://127.0.0.1:${bridgePort}/health`);
   const health = (await healthResponse.json()) as Record<string, unknown>;
   assert.equal(health.ok, true);
-  assert.equal(health.buildId, "v0.13.1-beta.1");
+  assert.equal(health.buildId, "v0.13.2-beta.1");
   assert.equal((health.workers as unknown[]).length, 2);
   assert.equal(typeof (health.resources as Record<string, unknown>).totalMemoryMb, "number");
   assert.equal((health.calibration as Record<string, unknown>).connectedWorkers, 2);

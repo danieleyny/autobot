@@ -38,7 +38,7 @@ def footer(canvas, doc):
     canvas.line(doc.leftMargin, 0.48 * inch, width - doc.rightMargin, 0.48 * inch)
     canvas.setFont("Helvetica", 8)
     canvas.setFillColor(MUTED)
-    canvas.drawString(doc.leftMargin, 0.30 * inch, "AUTOBOT Multi-Profile Host v0.13.1-beta.1")
+    canvas.drawString(doc.leftMargin, 0.30 * inch, "AUTOBOT Multi-Profile Host v0.13.2-beta.1")
     canvas.drawRightString(width - doc.rightMargin, 0.30 * inch, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -52,7 +52,7 @@ def build_pdf():
         rightMargin=0.65 * inch,
         topMargin=0.58 * inch,
         bottomMargin=0.68 * inch,
-        title="AUTOBOT v0.13.1-beta.1 Multi-Profile Host Setup",
+        title="AUTOBOT v0.13.2-beta.1 Multi-Profile Host Setup",
         author="AUTOBOT RSVP Lab",
         subject="Copyable Windows and Mac multi-profile host instructions",
     )
@@ -170,7 +170,7 @@ def build_pdf():
         story.append(table)
         story.append(Spacer(1, 7))
 
-    story.append(Paragraph("AUTOBOT v0.13.1-beta.1", title))
+    story.append(Paragraph("AUTOBOT v0.13.2-beta.1", title))
     story.append(Paragraph("MULTI-PROFILE HOST - WINDOWS AND MAC", subtitle))
     badges = Table(
         [[Paragraph("1-4 ISOLATED PROFILES", body), Paragraph("ONE-CLICK LAUNCH", body), Paragraph("CLASSIC MODE PRESERVED", body)]],
@@ -206,7 +206,7 @@ def build_pdf():
     h("Before setup")
     item("Install current Google Chrome from https://www.google.com/chrome")
     item("Install current Node.js LTS from https://nodejs.org")
-    item("Download and extract the v0.13.1 beta release ZIP. Do not run setup from inside the ZIP.")
+    item("Download and extract the v0.13.2 beta release ZIP. Do not run setup from inside the ZIP.")
     item("In Command Center > Operations, start a 48-hour enrollment with one use per planned worker.")
     item("Choose 1-4 workers. Start with 3 on an 8 GB computer and 4 on a 16 GB computer.")
     item("Close normal Chrome windows for the smoothest first-time setup.")
@@ -284,17 +284,17 @@ def build_pdf():
     h("3. Complete every numbered profile")
     p("Use the same Chrome extension, POSH login, approval, and prompt-suppression checklist shown on the Windows page. The steps are identical inside Chrome.")
 
-    story.append(PageBreak())
     story.append(Paragraph("EVERY LATER SESSION", title))
     story.append(Paragraph("One-click launch, calibration, recovery, and safe operation", subtitle))
     item("Sign into the physical computer. The profile-host bridge starts automatically.")
+    item("Double-click START-PROFILE-HOST-WINDOWS.cmd or START-PROFILE-HOST-MAC.command. It opens only missing Chrome profiles; no Terminal command is needed.")
     item("Open Command Center > Profile hosts and confirm the host channels are online.")
-    item("Click Launch all workers. Allow up to 15 seconds for an idle host to receive the command.")
     item("Resolve manual POSH prompts, open the event page in every profile, then click Calibrate host.")
-    item("Use the recommended worker count. Then click Select for operations.")
+    item("Keep all event windows visible for the 20-second local load simulation. It measures host event-loop delay, browser frame response, DOM scan cost, and free memory.")
+    item("The recent recommendation is the automatic limit for selected workers on that host. Then click Select for operations.")
     item("Follow the guided steps: select fleet, launch browsers, open event, run a fresh system check, and lock configuration.")
     item("Choose Rehearsal or Live test explicitly. For live mode, keep every selected event tab visible through release.")
-    callout("<b>Exact build required:</b> The host and every numbered AUTOBOT extension must report v0.13.1-beta.1 before the Command Center will activate a live run.")
+    callout("<b>Exact build required:</b> The host and every numbered AUTOBOT extension must report v0.13.2-beta.1 before the Command Center will activate a live run.")
 
     h("Turn off disruptive prompts in every profile")
     item("chrome://password-manager/settings - Offer to save passwords and passkeys: OFF")
@@ -304,12 +304,14 @@ def build_pdf():
     item("chrome://settings/addresses - Save and fill addresses: OFF")
 
     h("Recovery and validation")
-    code_box("npm run test:profiles")
+    code_box("npm run test:profiles\nnpm run profiles:report")
     item("If the host is offline, rerun npm run profiles:host from the extracted folder.")
     item("A local browser watchdog reopens a missing numbered worker outside the protected window from five minutes before through two minutes after release.")
     item("Rerunning the newest setup assistant refreshes worker extension files without deleting pairings or POSH profile data.")
     item("After an upgrade, click Reload on AUTOBOT in every numbered chrome://extensions page and restart the host service or computer once.")
     item("The controller interleaves preparation across physical hosts. Every worker must finish before the displayed preparation deadline; a late worker stops before submission.")
+    item("Leave experimental 15ms release lanes OFF unless repeated mock-event A/B tests show a benefit on that host.")
+    item("From two seconds before release, nonessential polling, logging, and storage writes pause while the prepared execution capsule uses its cached ticket controls.")
     item("If a worker was revoked, create a new enrollment code and run the replacement command below. Its Chrome profile and POSH cookies stay in place.")
     code_box("npm run profiles:setup -- --code=NEW_CODE --replace-worker=2 --no-onboarding")
 

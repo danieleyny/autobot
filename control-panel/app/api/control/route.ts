@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { audit, ensureControlSchema, nowMs, parseJson, randomPairingCode, sha256 } from "../../../db/control";
 import { getD1 } from "../../../db";
 import { CONTROLLER_REVISION, isDeviceOnline } from "../../../db/device-presence";
-import { hostAwarePreparationOrder } from "../../preparation-order";
+import { hostAwarePreparationOrder, hostReleaseOffsets } from "../../preparation-order";
 import {
   AUTOBOT_BUILD_ID,
   MIN_LIVE_PREPARATION_MS,
@@ -761,6 +761,33 @@ export async function POST(request: NextRequest) {
         if (run.mode === "live" && deviceStates.some((device) => !profileBuildMatches(device.state))) {
           throw new Error(`Every multi-profile worker must use the exact ${AUTOBOT_BUILD_ID} host and extension build.`);
         }
+        if (run.mode === "live") {
+          const selectedByHost = new Map<string, typeof deviceStates>();
+          for (const device of deviceStates) {
+            if (device.state.profileMode !== "multi" || typeof device.state.hostId !== "string") continue;
+            const group = selectedByHost.get(device.state.hostId) ?? [];
+            group.push(device);
+            selectedByHost.set(device.state.hostId, group);
+          }
+          for (const hostWorkers of selectedByHost.values()) {
+            const calibration = hostWorkers[0]?.state.hostCalibration;
+            if (!calibration || typeof calibration !== "object") continue;
+            const report = calibration as Record<string, unknown>;
+            const recommended = Number(report.recommendedWorkerCount);
+            const measuredAt = Number(report.measuredAt);
+            if (
+              Number.isInteger(recommended) &&
+              recommended >= 1 &&
+              Number.isFinite(measuredAt) &&
+              nowMs() - measuredAt <= 4 * 60 * 60_000 &&
+              hostWorkers.length > recommended
+            ) {
+              throw new Error(
+                `${String(hostWorkers[0]?.state.hostName || "A profile host")} calibrated for ${recommended} active worker${recommended === 1 ? "" : "s"}; deselect ${hostWorkers.length - recommended} on that computer.`,
+              );
+            }
+          }
+        }
         if (run.mode === "live" && Number(run.release_at) - nowMs() < MIN_LIVE_PREPARATION_MS) {
           throw new Error("Live activation needs at least 20 seconds to prepare every selected worker safely.");
         }
@@ -800,6 +827,7 @@ export async function POST(request: NextRequest) {
         const db = getD1();
         let preparationOrder: string[] = [];
         let prepareDeadlineAt: number | null = null;
+        let releaseLaneMs: 0 | 15 = 0;
 
         if (run.mode === "inspection") {
           const statements = selectedIds.flatMap((deviceId) => [
@@ -846,6 +874,11 @@ export async function POST(request: NextRequest) {
           if (firstSlotCount < 0 || firstSlotCount > selectedIds.length) {
             throw new Error("The first-slot device count is invalid for the selected fleet.");
           }
+          const requestedReleaseLaneMs = Number(body.releaseLaneMs ?? 0);
+          if (![0, 15].includes(requestedReleaseLaneMs)) {
+            throw new Error("The experimental release lane must be off or 15ms.");
+          }
+          releaseLaneMs = requestedReleaseLaneMs as 0 | 15;
           const assignments = new Map(
             selectedIds.map((deviceId, index) => [
               deviceId,
@@ -859,6 +892,11 @@ export async function POST(request: NextRequest) {
           preparationOrder = hostAwarePreparationOrder(
             selectedIds,
             deviceStates.map((device) => ({ id: device.id, state: device.state })),
+          );
+          const releaseOffsets = hostReleaseOffsets(
+            selectedIds,
+            deviceStates.map((device) => ({ id: device.id, state: device.state })),
+            releaseLaneMs,
           );
           const preparationPosition = new Map(
             preparationOrder.map((deviceId, index) => [deviceId, index]),
@@ -896,6 +934,8 @@ export async function POST(request: NextRequest) {
                 runId,
                 JSON.stringify({
                 ...payload,
+                releaseAt: Number(run.release_at) + (releaseOffsets.get(deviceId) ?? 0),
+                releaseOffsetMs: releaseOffsets.get(deviceId) ?? 0,
                 prepareAt,
                 prepareDeadlineAt,
                 preparationIndex: preparationIndex + 1,
@@ -933,6 +973,7 @@ export async function POST(request: NextRequest) {
               ? {
                   preparationOrder,
                   prepareDeadlineAt,
+                  releaseLaneMs,
                 }
               : {}),
             ...(run.mode === "live"

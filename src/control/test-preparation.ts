@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { hostAwarePreparationOrder } from "../../control-panel/app/preparation-order.js";
+import { hostAwarePreparationOrder, hostReleaseOffsets } from "../../control-panel/app/preparation-order.js";
 
 const selectedIds = ["host-a-1", "host-a-2", "host-a-3", "host-b-1", "host-b-2", "classic-1"];
 const devices = [
@@ -28,4 +28,21 @@ assert.deepEqual(hostAwarePreparationOrder(reorderedInput, devices), [
   "host-b-2",
 ]);
 
-console.log("Host-aware preparation ordering passed: workers are interleaved across physical computers.");
+assert.deepEqual(Object.fromEntries(hostReleaseOffsets(selectedIds, devices, 0)), {
+  "host-a-1": 0,
+  "host-a-2": 0,
+  "host-a-3": 0,
+  "host-b-1": 0,
+  "host-b-2": 0,
+  "classic-1": 0,
+});
+assert.deepEqual(Object.fromEntries(hostReleaseOffsets(selectedIds, devices, 15)), {
+  "host-a-1": 0,
+  "host-a-2": 15,
+  "host-a-3": 30,
+  "host-b-1": 0,
+  "host-b-2": 15,
+  "classic-1": 0,
+});
+
+console.log("Host-aware preparation ordering passed: preparation is interleaved and optional release lanes stay host-local.");

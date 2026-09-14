@@ -1,6 +1,6 @@
 // Controller-only compatibility patch. Existing v0.11.x bridges still poll at
 // their original cadence; command delivery and reports must not be throttled.
-export const CONTROLLER_REVISION = "v0.13.1-beta.1";
+export const CONTROLLER_REVISION = "v0.13.2-beta.1";
 export const DEVICE_KEEPALIVE_WRITE_MS = 5_000;
 export const DEVICE_CONNECTION_GRACE_MS = 7_500;
 export const DEVICE_ONLINE_WINDOW_MS = DEVICE_KEEPALIVE_WRITE_MS + DEVICE_CONNECTION_GRACE_MS;

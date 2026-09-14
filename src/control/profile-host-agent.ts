@@ -1,5 +1,6 @@
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import express, { type Request } from "express";
 import { decryptForDevice, generateDeviceKeyPair } from "./encryption.js";
 import { launchWorkerBrowser } from "./profile-browser.js";
@@ -42,6 +43,8 @@ type WorkerRuntime = {
   activeRunReleaseAt: number | null;
   lastExtensionPollAt: number;
   extensionPollIntervals: number[];
+  performanceSamples: Array<{ frameGapMs: number; domScanMs: number }>;
+  lastPerformanceSampleAt: number;
 };
 
 type HostCalibration = {
@@ -53,24 +56,35 @@ type HostCalibration = {
   recommendedWorkerCount: number;
   averageExtensionGapMs: number | null;
   maxExtensionGapMs: number | null;
+  p95HostEventLoopLagMs: number | null;
+  p95FrameGapMs: number | null;
+  p95DomScanMs: number | null;
+  minimumFreeMemoryMb: number;
+  recommendedReleaseLaneMs: 0 | 15;
   freeMemoryMb: number;
   stable: boolean;
   summary: string;
 };
 
-const VERSION = "0.13.1";
-const BUILD_ID = "v0.13.1-beta.1";
+const VERSION = "0.13.2";
+const BUILD_ID = "v0.13.2-beta.1";
 const BRIDGE_PROTOCOL_VERSION = "0.12.2";
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 const IDLE_POLL_INTERVAL_MS = 15_000;
+const RELEASE_QUIET_LEAD_MS = 2_000;
+const RELEASE_QUIET_TAIL_MS = 15_000;
 const CLOCK_SAMPLE_LIMIT = 8;
-const CALIBRATION_DURATION_MS = 4_000;
+const requestedCalibrationMs = Math.trunc(Number(readOption("calibration-ms", "20000")));
+const CALIBRATION_DURATION_MS = Number.isFinite(requestedCalibrationMs)
+  ? Math.max(1_000, Math.min(30_000, requestedCalibrationMs))
+  : 20_000;
 const BROWSER_WATCHDOG_INTERVAL_MS = 10_000;
 const BROWSER_MISSING_GRACE_MS = 30_000;
 const BROWSER_RECOVERY_COOLDOWN_MS = 60_000;
 const BROWSER_RECOVERY_FREEZE_MS = 5 * 60_000;
 const RUN_RECOVERY_TAIL_MS = 2 * 60_000;
 const configFile = profileHostConfigPath();
+const performanceReportFile = path.join(path.dirname(configFile), "profile-host-performance.json");
 const config = JSON.parse(await readFile(configFile, "utf8")) as ProfileHostConfig;
 const port = Number(readOption("port", String(config.bridgePort || 4182)));
 if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -118,11 +132,14 @@ const runtimes = new Map<string, WorkerRuntime>(
       activeRunReleaseAt: null,
       lastExtensionPollAt: 0,
       extensionPollIntervals: [],
+      performanceSamples: [],
+      lastPerformanceSampleAt: 0,
     },
   ]),
 );
 let stopping = false;
 let hostCalibration: HostCalibration | null = null;
+let calibrationActiveUntil = 0;
 let cachedHostResources: ReturnType<typeof hostResources> | null = null;
 let hostResourcesSampledAt = 0;
 
@@ -134,7 +151,19 @@ function extensionConnectedNow(runtime: WorkerRuntime) {
   return pageConnectedNow(runtime) || Date.now() - runtime.backgroundSeenAt < 4_000;
 }
 
+function releaseQuietDelayMs(runtime: WorkerRuntime) {
+  if (!runtime.activeRunReleaseAt) return 0;
+  const controllerNow = Date.now() + runtime.clockOffsetMs;
+  const quietStartsAt = runtime.activeRunReleaseAt - RELEASE_QUIET_LEAD_MS;
+  const quietEndsAt = runtime.activeRunReleaseAt + RELEASE_QUIET_TAIL_MS;
+  return controllerNow >= quietStartsAt && controllerNow < quietEndsAt
+    ? Math.max(1, quietEndsAt - controllerNow)
+    : 0;
+}
+
 function desiredPollIntervalMs(runtime: WorkerRuntime) {
+  const quietDelayMs = releaseQuietDelayMs(runtime);
+  if (quietDelayMs) return quietDelayMs;
   return pageConnectedNow(runtime) || runtime.pendingCommand
     ? ACTIVE_POLL_INTERVAL_MS
     : IDLE_POLL_INTERVAL_MS;
@@ -169,19 +198,66 @@ function recordExtensionPoll(runtime: WorkerRuntime, timestamp: number) {
   runtime.lastExtensionPollAt = timestamp;
 }
 
-function recommendedWorkerCount(resources: ReturnType<typeof hostResources>, maxGapMs: number | null) {
+function percentile(values: number[], quantile: number): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1))]!;
+}
+
+function recommendedWorkerCount(
+  resources: ReturnType<typeof hostResources>,
+  metrics: {
+    maxExtensionGapMs: number | null;
+    p95HostEventLoopLagMs: number | null;
+    p95FrameGapMs: number | null;
+    p95DomScanMs: number | null;
+    minimumFreeMemoryMb: number;
+  },
+) {
   let recommendation = 4;
   if (resources.totalMemoryMb < 8_000 || resources.cpuCount < 4) recommendation = 2;
   else if (resources.totalMemoryMb < 12_000 || resources.cpuCount < 8) recommendation = 3;
-  if (resources.freeMemoryMb < 1_500) recommendation = Math.min(recommendation, 2);
-  else if (resources.freeMemoryMb < 2_500) recommendation = Math.min(recommendation, 3);
-  if (maxGapMs !== null && maxGapMs > 2_000) recommendation = Math.max(1, recommendation - 1);
+  if (metrics.minimumFreeMemoryMb < 1_500) recommendation = Math.min(recommendation, 2);
+  else if (metrics.minimumFreeMemoryMb < 2_500) recommendation = Math.min(recommendation, 3);
+  if (metrics.maxExtensionGapMs !== null && metrics.maxExtensionGapMs > 2_000) {
+    recommendation = Math.max(1, recommendation - 1);
+  }
+  if (
+    (metrics.p95HostEventLoopLagMs !== null && metrics.p95HostEventLoopLagMs > 35) ||
+    (metrics.p95FrameGapMs !== null && metrics.p95FrameGapMs > 35) ||
+    (metrics.p95DomScanMs !== null && metrics.p95DomScanMs > 20)
+  ) {
+    recommendation = Math.max(1, recommendation - 1);
+  }
   return Math.min(config.workers.length, recommendation);
 }
 
 async function calibrateHost(): Promise<HostCalibration> {
-  for (const runtime of runtimes.values()) runtime.extensionPollIntervals.length = 0;
-  await new Promise((resolve) => setTimeout(resolve, CALIBRATION_DURATION_MS));
+  for (const runtime of runtimes.values()) {
+    runtime.extensionPollIntervals.length = 0;
+    runtime.performanceSamples.length = 0;
+    runtime.lastPerformanceSampleAt = 0;
+  }
+  calibrationActiveUntil = Date.now() + CALIBRATION_DURATION_MS;
+  const hostEventLoopLags: number[] = [];
+  const freeMemorySamplesMb: number[] = [];
+  let expectedTickAt = Date.now() + 50;
+  const eventLoopTimer = setInterval(() => {
+    const timestamp = Date.now();
+    hostEventLoopLags.push(Math.max(0, timestamp - expectedTickAt));
+    expectedTickAt = timestamp + 50;
+  }, 50);
+  const memoryTimer = setInterval(() => {
+    freeMemorySamplesMb.push(Math.round(os.freemem() / 1024 / 1024));
+  }, 500);
+  freeMemorySamplesMb.push(Math.round(os.freemem() / 1024 / 1024));
+  try {
+    await new Promise((resolve) => setTimeout(resolve, CALIBRATION_DURATION_MS));
+  } finally {
+    clearInterval(eventLoopTimer);
+    clearInterval(memoryTimer);
+    calibrationActiveUntil = 0;
+  }
 
   const resources = hostResources();
   cachedHostResources = resources;
@@ -195,13 +271,31 @@ async function calibrateHost(): Promise<HostCalibration> {
     ? Math.round(intervals.reduce((total, interval) => total + interval, 0) / intervals.length)
     : null;
   const maxExtensionGapMs = intervals.length ? Math.max(...intervals) : null;
-  const recommendation = recommendedWorkerCount(resources, maxExtensionGapMs);
+  const performanceSamples = connected.flatMap((runtime) => runtime.performanceSamples);
+  const p95HostEventLoopLagMs = percentile(hostEventLoopLags, 0.95);
+  const p95FrameGapMs = percentile(performanceSamples.map((sample) => sample.frameGapMs), 0.95);
+  const p95DomScanMs = percentile(performanceSamples.map((sample) => sample.domScanMs), 0.95);
+  const minimumFreeMemoryMb = Math.min(resources.freeMemoryMb, ...freeMemorySamplesMb);
+  const recommendation = recommendedWorkerCount(resources, {
+    maxExtensionGapMs,
+    p95HostEventLoopLagMs,
+    p95FrameGapMs,
+    p95DomScanMs,
+    minimumFreeMemoryMb,
+  });
   const stable =
     connected.length === config.workers.length &&
     eventReadyWorkers === config.workers.length &&
-    resources.freeMemoryMb >= 1_000 &&
+    minimumFreeMemoryMb >= 1_000 &&
     maxExtensionGapMs !== null &&
-    maxExtensionGapMs <= 2_000;
+    maxExtensionGapMs <= 2_000 &&
+    p95HostEventLoopLagMs !== null &&
+    p95HostEventLoopLagMs <= 35 &&
+    p95FrameGapMs !== null &&
+    p95FrameGapMs <= 35 &&
+    p95DomScanMs !== null &&
+    p95DomScanMs <= 20;
+  const recommendedReleaseLaneMs: 0 | 15 = stable ? 0 : 15;
   const summary = stable
     ? `${connected.length} workers responded steadily; use up to ${recommendation} on this host.`
     : connected.length !== config.workers.length || eventReadyWorkers !== config.workers.length
@@ -217,10 +311,20 @@ async function calibrateHost(): Promise<HostCalibration> {
     recommendedWorkerCount: recommendation,
     averageExtensionGapMs,
     maxExtensionGapMs,
+    p95HostEventLoopLagMs: p95HostEventLoopLagMs === null ? null : Math.round(p95HostEventLoopLagMs * 10) / 10,
+    p95FrameGapMs: p95FrameGapMs === null ? null : Math.round(p95FrameGapMs * 10) / 10,
+    p95DomScanMs: p95DomScanMs === null ? null : Math.round(p95DomScanMs * 10) / 10,
+    minimumFreeMemoryMb,
+    recommendedReleaseLaneMs,
     freeMemoryMb: resources.freeMemoryMb,
     stable,
     summary,
   };
+  await writeFile(
+    performanceReportFile,
+    `${JSON.stringify({ localOnly: true, hostId: config.hostId, hostName: config.hostName, calibration: hostCalibration }, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  ).catch(() => {});
   for (const runtime of runtimes.values()) scheduleHeartbeat(runtime, 0);
   return hostCalibration;
 }
@@ -471,6 +575,7 @@ async function heartbeat(runtime: WorkerRuntime) {
 
 function scheduleHeartbeat(runtime: WorkerRuntime, delayMs = desiredPollIntervalMs(runtime)) {
   if (stopping) return;
+  delayMs = Math.max(delayMs, releaseQuietDelayMs(runtime));
   const dueAt = Date.now() + Math.max(0, delayMs);
   if (runtime.heartbeatTimer && runtime.heartbeatDueAt <= dueAt) return;
   if (runtime.heartbeatTimer) clearTimeout(runtime.heartbeatTimer);
@@ -569,6 +674,22 @@ app.post("/extension/poll", (request, response) => {
   runtime.browserRecoveryState = "watching";
   runtime.extensionStatus =
     request.body?.status && typeof request.body.status === "object" ? request.body.status : {};
+  const performanceSample = runtime.extensionStatus.performanceSample;
+  if (
+    timestamp < calibrationActiveUntil &&
+    performanceSample &&
+    typeof performanceSample === "object" &&
+    Number((performanceSample as Record<string, unknown>).measuredAt) > runtime.lastPerformanceSampleAt
+  ) {
+    const measuredAt = Number((performanceSample as Record<string, unknown>).measuredAt);
+    const frameGapMs = Number((performanceSample as Record<string, unknown>).frameGapMs);
+    const domScanMs = Number((performanceSample as Record<string, unknown>).domScanMs);
+    if (Number.isFinite(measuredAt) && Number.isFinite(frameGapMs) && Number.isFinite(domScanMs)) {
+      runtime.lastPerformanceSampleAt = measuredAt;
+      runtime.performanceSamples.push({ frameGapMs, domScanMs });
+      if (runtime.performanceSamples.length > 80) runtime.performanceSamples.shift();
+    }
+  }
   const observedEventUrl = runtime.extensionStatus.eventUrl;
   if (typeof observedEventUrl === "string") {
     try {
@@ -588,6 +709,7 @@ app.post("/extension/poll", (request, response) => {
     hostName: config.hostName,
     clockOffsetMs: runtime.clockOffsetMs,
     clockRoundTripMs: runtime.clockRoundTripMs,
+    performanceProbe: timestamp < calibrationActiveUntil,
     command:
       runtime.extensionStatus.controlEnabled === false || runtime.pendingCommand?.type === "open-event"
         ? null

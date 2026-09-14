@@ -247,7 +247,7 @@ test("live fleet command arms one independent executor without clicking before r
     () => (window as unknown as { __autobotControlStatuses: Array<Record<string, unknown>> })
       .__autobotControlStatuses.at(-1),
   );
-  expect(latestStatus?.extensionBuildId).toBe("v0.13.1-beta.1");
+  expect(latestStatus?.extensionBuildId).toBe("v0.13.2-beta.1");
   expect(latestStatus?.prepareDeadlineAt).toBe(releaseAt - 10_000);
 });
 

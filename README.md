@@ -8,7 +8,7 @@ It has two providers:
 - `mock`: a local POSH-like event used for unrestricted development and repeatable tests.
 - `posh`: a conservative adapter for one private, organizer-owned free RSVP event.
 
-AUTOBOT v0.13.1-beta.1 adds an optional secondary multi-profile host while preserving
+AUTOBOT v0.13.2-beta.1 improves the optional secondary multi-profile host while preserving
 the original one-computer-per-device system. A physical Mac or Windows computer
 can host 1-4 isolated Chrome workers, each with its own POSH session, extension
 identity, encrypted command channel, ticket-slot assignment, and one-use lease.
@@ -23,9 +23,11 @@ capacity calibration, per-profile Launch and Reset controls, whole-host Reset,
 and a safe bridge refresh command. A browser watchdog can reopen a missing
 numbered worker outside the protected release window. Start with calibration and
 the built-in two-profile acceptance check before increasing a host to three or
-four workers.
+four workers. v0.13.2 runs a 20-second local browser/host load simulation and
+automatically prevents selecting more same-host workers than that recent
+calibration recommends.
 
-The v0.13.1 profile-host beta uses its own isolated dashboard at
+The v0.13.2 profile-host beta uses its own isolated dashboard at
 https://autobot-profile-host-beta.avgschnook.chatgpt.site. The working v0.12.2
 classic dashboard remains unchanged at
 https://autobot-command-center.avgschnook.chatgpt.site, providing an immediate
@@ -49,9 +51,15 @@ preparation is interleaved across physical hosts while the final release remains
 synchronized. Each worker must finish before the controller-issued preparation
 deadline, and any late worker is stopped before ticket submission. A managed live
 run stops if its event tab is hidden, and each
-laptop keeps a local-only timing log that can be copied from its extension panel.
+laptop keeps a local-only performance report that can be copied from its extension panel.
 Idle bridges now check in every 15 seconds and automatically return to
 one-second command polling whenever an event page or pending command is active.
+From two seconds before release through the protected submission window, the
+extension pauses nonessential status polling, storage writes, dashboard updates,
+and panel logging. It uses the exact ticket card and add control cached during
+preparation, falling back to a safe scan only if POSH replaced that prepared
+control. Same-host 15ms release lanes are available for mock-event benchmarking
+but remain off by default.
 
 The POSH adapter does not bypass OTP, CAPTCHA, queues, rate limits, purchase
 limits, payments, or other controls. Live submission stays locked until the
@@ -98,6 +106,9 @@ to be removed.
    dashboard.
 7. On later sessions, open **Profile hosts** in the dashboard and click
    **Launch all workers**, then **Calibrate host** and **Select for operations**.
+   You can also double-click `START-PROFILE-HOST-MAC.command` or
+   `START-PROFILE-HOST-WINDOWS.cmd`; it starts the host if needed and opens only
+   missing Chrome profiles.
 8. Follow the guided event-day steps, run the fresh system check, lock the
    configuration, and choose **Rehearsal** or **Live test** explicitly.
 
@@ -118,6 +129,13 @@ npm run profiles:install
 npm run profiles:host
 ```
 
+After setup, ordinary use needs no typed Terminal command. Double-click the
+matching `START-PROFILE-HOST-*` file. To print the latest local host calibration:
+
+```bash
+npm run profiles:report
+```
+
 Validate the isolated local routing without opening Chrome:
 
 ```bash
@@ -132,10 +150,10 @@ npm run profiles:setup -- --code=NEW_ENROLLMENT_CODE --replace-worker=2 --no-onb
 ```
 
 To upgrade an already paired classic laptop, run the setup assistant from the
-extracted v0.13.1 folder. It preserves the saved device identity and Command Center
+extracted v0.13.2 folder. It preserves the saved device identity and Command Center
 pairing; do not remove or revoke the laptop first. Remove the old unpacked
 AUTOBOT extension in `chrome://extensions`, load the new package's `extension`
-folder, and restart the computer once so the startup bridge switches to v0.13.1.
+folder, and restart the computer once so the startup bridge switches to v0.13.2.
 
 For manual setup, open Terminal or PowerShell in the extracted folder and run:
 
@@ -251,7 +269,7 @@ folder. Existing legacy `config/device.json` credentials migrate automatically
 when upgrading in place. The bridge listens only on that computer's loopback
 interface at `127.0.0.1:4181`.
 
-Reload the unpacked extension after installing v0.13.1. On a POSH event page,
+Reload the unpacked extension after installing v0.13.2. On a POSH event page,
 **Allow command center** may be enabled or disabled at any time. When disabled,
 the device stays completely standalone. Even while enabled, the local **Run /
 Arm** and **Stop** controls remain available; choosing local operation withdraws
@@ -291,8 +309,8 @@ test tickets have been deleted or relisted. The dashboard overview summarizes
 the latest run as confirmed/passed, waiting or review, and issues. The **Fleet directory** tab stores optional POSH account
 email, phone, and a secondary description for each laptop. Those fields remain
 dashboard-only and are never sent to the device or used by the automation.
-Each laptop also keeps a local timing timeline containing step names and times,
-but no password, login, OTP, email, or phone data. Use **Copy local timing log**
+Each laptop also keeps a local performance report containing step names and times,
+but no password, login, OTP, email, or phone data. Use **Copy local performance report**
 in that laptop's AUTOBOT panel when a slow run needs diagnosis.
 
 Pairings persist across restarts, so the computers can be connected the day

@@ -85,7 +85,7 @@ async function claimDevice(code: string, name: string) {
     action: "pair",
     code,
     name,
-    version: "0.13.1-test",
+    version: "0.13.2-test",
     publicKey: keys.publicKeyPem,
   });
   return {
@@ -106,7 +106,7 @@ async function poll(
     "/api/device",
     {
       action: "poll",
-      version: "0.13.1-test",
+      version: "0.13.2-test",
       publicKey: keys.publicKeyPem,
       status: {
         bridgeOnline: true,
@@ -120,8 +120,8 @@ async function poll(
         eventTitle,
         pollIntervalMs: 15_000,
         profileMode: "multi",
-        hostBuildId: "v0.13.1-beta.1",
-        extensionBuildId: "v0.13.1-beta.1",
+        hostBuildId: "v0.13.2-beta.1",
+        extensionBuildId: "v0.13.2-beta.1",
         hostId: "test-profile-host",
         hostName: "Test Profile Host",
         workerId: `worker-${token.slice(0, 6)}`,
@@ -195,7 +195,7 @@ try {
       action: "pair",
       code: enrollment.code,
       name: "Over capacity",
-      version: "0.13.1-test",
+      version: "0.13.2-test",
       publicKey: rejectedKeys.publicKeyPem,
     },
     { expectedStatus: 401 },
@@ -284,8 +284,8 @@ try {
   assert.equal(directoryDevice?.contactEmail, "executor.one@example.com");
   assert.equal(directoryDevice?.contactPhone, "+1 212 555 0100");
   assert.equal(directoryDevice?.description, "Primary test account");
-  assert.equal(directoryState.controllerRevision, "v0.13.1-beta.1");
-  assert.equal(directoryState.expectedBuildId, "v0.13.1-beta.1");
+  assert.equal(directoryState.controllerRevision, "v0.13.2-beta.1");
+  assert.equal(directoryState.expectedBuildId, "v0.13.2-beta.1");
   const firstSeenAt = Number(directoryDevice?.lastSeenAt);
   await poll(executorOne.token, executorOne.keys, eventTitle);
   const duplicateState = await jsonRequest("/api/control", null, { cookie });
@@ -346,6 +346,7 @@ try {
       deviceIds: [executorOne.id, executorTwo.id],
       confirmEventTitle: eventTitle,
       firstSlotCount: 1,
+      releaseLaneMs: 15,
       encryptedSecrets: {
         [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
         [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
@@ -374,6 +375,37 @@ try {
     { cookie, expectedStatus: 400 },
   );
   assert.match(String(mixedBuildResult.error), /exact.*build/i);
+  const constrainedCalibration = {
+    measuredAt: Date.now(),
+    recommendedWorkerCount: 1,
+    stable: false,
+  };
+  await poll(executorOne.token, executorOne.keys, eventTitle, {
+    pageVisible: true,
+    workerIndex: 1,
+    hostCalibration: constrainedCalibration,
+  });
+  await poll(executorTwo.token, executorTwo.keys, eventTitle, {
+    pageVisible: true,
+    workerIndex: 2,
+    hostCalibration: constrainedCalibration,
+  });
+  const calibratedLimitResult = await jsonRequest(
+    "/api/control",
+    {
+      action: "arm-run",
+      runId,
+      deviceIds: [executorOne.id, executorTwo.id],
+      confirmEventTitle: eventTitle,
+      firstSlotCount: 1,
+      encryptedSecrets: {
+        [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
+        [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
+      },
+    },
+    { cookie, expectedStatus: 400 },
+  );
+  assert.match(String(calibratedLimitResult.error), /calibrated for 1 active worker/i);
   await poll(executorOne.token, executorOne.keys, eventTitle, { pageVisible: true, workerIndex: 1 });
   await poll(executorTwo.token, executorTwo.keys, eventTitle, { pageVisible: true, workerIndex: 2 });
   await jsonRequest(
@@ -384,6 +416,7 @@ try {
       deviceIds: [executorOne.id, executorTwo.id],
       confirmEventTitle: eventTitle,
       firstSlotCount: 1,
+      releaseLaneMs: 15,
       encryptedSecrets: {
         [executorOne.id]: encryptForDevice(eventPassword, executorOne.keys.publicKeyPem),
         [executorTwo.id]: encryptForDevice(eventPassword, executorTwo.keys.publicKeyPem),
@@ -416,7 +449,9 @@ try {
     decryptForDevice(String(executorTwoPayload.eventSecret), executorTwo.keys.privateKeyPem),
     eventPassword,
   );
-  assert.equal(executorOnePayload.releaseAt, executorTwoPayload.releaseAt);
+  assert.equal(Number(executorTwoPayload.releaseAt) - Number(executorOnePayload.releaseAt), 15);
+  assert.equal(executorOnePayload.releaseOffsetMs, 0);
+  assert.equal(executorTwoPayload.releaseOffsetMs, 15);
   assert.ok(Number(executorOnePayload.prepareAt) <= Number(executorTwoPayload.prepareAt));
   assert.ok(Number(executorTwoPayload.prepareAt) < Number(executorTwoPayload.releaseAt));
   assert.equal(
@@ -599,7 +634,7 @@ try {
   assert.ok(!(afterRemoval.devices as Array<Record<string, unknown>>).some((device) => device.id === executorTwo.id));
   console.log("Control integration passed: profile-host launch/refresh, remote event opening, encrypted fleet delivery, slot splitting, reset/reactivation, and revocation.");
 } finally {
-  if (server && !server.killed) {
+  if (server && server.exitCode === null && !server.killed) {
     const exited = new Promise<void>((resolve) => server!.once("exit", () => resolve()));
     server.kill("SIGTERM");
     await exited;

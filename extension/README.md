@@ -7,7 +7,7 @@ It deliberately does **not** run on POSH login pages and cannot read, store, or
 submit phone numbers, email addresses, OTPs, CAPTCHA/Turnstile responses, or
 payment information.
 
-## Optional Command Center in v0.13.1
+## Optional Command Center in v0.13.2
 
 The normal panel remains fully standalone. If the local v0.12.2-or-newer device bridge is
 running, the bottom of the panel shows the paired device name and a green
@@ -27,7 +27,7 @@ password separately with each device's public key, and only that device's local
 bridge decrypts it. The controller never receives a readable password. POSH
 login, OTP, Cloudflare, browser sessions, and completion locks remain local.
 
-v0.13.1 also supports the optional secondary multi-profile host. Its setup
+v0.13.2 also supports the optional secondary multi-profile host. Its setup
 assistant creates a private numbered copy of this extension for every isolated
 Chrome worker. Load only the numbered path printed for that profile; do not load
 the ordinary package `extension` folder into a profile worker. Classic mode is
@@ -75,14 +75,19 @@ the current page's memory, so keep the tab open.
 For managed live runs, the helper focuses the event tab, opens the ticket
 selector, verifies the assigned free slot, and checks the local one-shot lock
 before release. It does not change ticket quantity during this preparation.
-The prepared card is revalidated at release and rescanned if POSH replaced it.
+The prepared execution capsule keeps the exact ticket card and add control ready
+for release. It uses those cached controls without a full-page ticket scan, and
+rescans safely only if POSH replaced them.
 Hiding the event tab stops the managed run so Chrome background throttling
 cannot silently delay the local clock.
 
 The controller interleaves preparation across physical hosts so one computer is
 not asked to prepare all of its profiles at once. Every profile reports the
 exact beta build and must complete preparation before the controller-issued
-deadline. The host can run a short local capacity calibration, and its browser
+deadline. The host can run a 20-second local capacity calibration measuring
+host event-loop delay, browser frame response, DOM scan cost, and available
+memory. Its recent recommendation becomes the automatic same-host worker limit.
+The browser
 watchdog can reopen a missing numbered worker outside the protected release
 window.
 
@@ -95,7 +100,8 @@ clears this event's local one-shot locks on each selected laptop, and restores
 the local Run / Arm button. Use it only after the organizer-owned test tickets
 have been deleted or relisted.
 
-**Copy local timing log** copies a device-only JSON timeline for diagnosing a
+**Copy local performance report** copies a device-only JSON timeline and phase
+duration summary for diagnosing a
 slow run. The timeline is never sent to the Command Center and contains no
 password, login, OTP, email, or phone data.
 

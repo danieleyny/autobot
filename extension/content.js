@@ -2,8 +2,8 @@
   "use strict";
 
   const ROOT_ID = "autobot-owned-event-lab";
-  const VERSION = "0.13.1";
-  const BUILD_ID = "v0.13.1-beta.1";
+  const VERSION = "0.13.2";
+  const BUILD_ID = "v0.13.2-beta.1";
   const STATE_KEY = `autobot:${location.pathname}`;
   const TIMELINE_KEY = `autobot-timeline:${location.pathname}`;
   const SUCCESS_PATTERN = /reservation confirmed|rsvp confirmed|you(?:'|’)re going|order confirmed/i;
@@ -16,6 +16,8 @@
   const ANTI_BOT_PATTERN =
     /captcha|turnstile|cloudflare|verifying you(?:'|’)re not a robot|too many requests|rate limit|temporarily blocked/i;
   const DOM_POLL_MS = 25;
+  const RELEASE_QUIET_LEAD_MS = 2_000;
+  const RELEASE_QUIET_TAIL_MS = 15_000;
   const GATE_EARLY_MS = 120_000;
   const GATE_LATE_MS = 120_000;
   const GATE_ATTEMPT_OFFSETS_MS = [
@@ -112,7 +114,7 @@
         <button id="arm">Run / Arm</button>
         <button id="disarm" class="secondary">Stop</button>
         <button id="reset-lock" class="secondary">Reset this event's test locks</button>
-        <button id="copy-timeline" class="secondary">Copy local timing log</button>
+        <button id="copy-timeline" class="secondary">Copy local performance report</button>
       </div>
       <div id="status" class="status" role="status">Ready. Authenticate with POSH normally before executing.</div>
       <div class="control-state">
@@ -146,13 +148,43 @@
   let controllerClockOffsetMs = 0;
   let controllerClockRoundTripMs = null;
   let preparedTicketCard = null;
+  let preparedTicketAddButton = null;
   let preparedTicketName = "";
+  let preparedTicketObserver = null;
   let performanceTimeline = [];
+  let deferredTimelineWrite = false;
+  let deferredState = null;
+  let deferredLogLines = [];
+  let deferredControlReports = [];
+  let performanceProbeInFlight = false;
+  let latestPerformanceSample = null;
+  let lastPerformanceProbeAt = 0;
+
+  function releaseQuietActive() {
+    const releaseAt = Number(activeControlCommand?.payload?.releaseAt);
+    if (activeControlCommand?.type !== "arm-live" || !Number.isFinite(releaseAt)) return false;
+    const now = synchronizedNow();
+    return now >= releaseAt - RELEASE_QUIET_LEAD_MS && now <= releaseAt + RELEASE_QUIET_TAIL_MS;
+  }
 
   function log(message) {
     const time = new Date().toLocaleTimeString();
     latestLogMessage = message;
+    if (releaseQuietActive()) {
+      deferredLogLines = [...deferredLogLines.slice(-11), `[${time}] ${message}`];
+      return;
+    }
     status.textContent = `[${time}] ${message}\n${status.textContent}`.slice(0, 3000);
+  }
+
+  function timelineRecord() {
+    return {
+      version: VERSION,
+      buildId: BUILD_ID,
+      eventPath: location.pathname,
+      updatedAt: new Date().toISOString(),
+      entries: performanceTimeline
+    };
   }
 
   function traceStep(step, detail = {}) {
@@ -166,14 +198,11 @@
       ...detail
     };
     performanceTimeline = [...performanceTimeline.slice(-39), entry];
-    chrome.storage.local.set({
-      [TIMELINE_KEY]: {
-        version: VERSION,
-        eventPath: location.pathname,
-        updatedAt: new Date(localAt).toISOString(),
-        entries: performanceTimeline
-      }
-    }).catch(() => {});
+    if (releaseQuietActive()) {
+      deferredTimelineWrite = true;
+      return;
+    }
+    chrome.storage.local.set({ [TIMELINE_KEY]: timelineRecord() }).catch(() => {});
   }
 
   function resetPerformanceTimeline(command) {
@@ -233,7 +262,8 @@
       runId: activeControlCommand?.runId || null,
       latestMessage: latestLogMessage,
       clockOffsetMs: controllerClockOffsetMs,
-      clockRoundTripMs: controllerClockRoundTripMs
+      clockRoundTripMs: controllerClockRoundTripMs,
+      performanceSample: latestPerformanceSample
     };
   }
 
@@ -254,7 +284,7 @@
     }
   }
 
-  async function controlReport(command, phase, detail = {}) {
+  async function sendControlReport(command, phase, detail = {}) {
     if (!command?.id) return { ok: true, local: true };
     let lastError = "The command center did not acknowledge the device report.";
     for (const retryDelay of [0, 100, 300]) {
@@ -272,6 +302,65 @@
       lastError = result?.error || lastError;
     }
     throw new Error(lastError);
+  }
+
+  async function controlReport(command, phase, detail = {}) {
+    if (!command?.id) return { ok: true, local: true };
+    if (releaseQuietActive()) {
+      deferredControlReports.push({ command, phase, detail });
+      return { ok: true, deferred: true };
+    }
+    return sendControlReport(command, phase, detail);
+  }
+
+  async function flushDeferredActivity() {
+    if (releaseQuietActive()) return;
+    if (deferredLogLines.length) {
+      status.textContent = `${deferredLogLines.reverse().join("\n")}\n${status.textContent}`.slice(0, 3000);
+      deferredLogLines = [];
+    }
+    if (deferredTimelineWrite) {
+      deferredTimelineWrite = false;
+      await chrome.storage.local.set({ [TIMELINE_KEY]: timelineRecord() }).catch(() => {});
+    }
+    if (deferredState) {
+      const state = deferredState;
+      deferredState = null;
+      await chrome.storage.local.set({ [STATE_KEY]: state }).catch(() => {});
+    }
+    const reports = deferredControlReports;
+    deferredControlReports = [];
+    for (const report of reports) {
+      await sendControlReport(report.command, report.phase, report.detail).catch(() => {});
+    }
+  }
+
+  async function runLocalPerformanceProbe() {
+    if (performanceProbeInFlight || releaseQuietActive() || Date.now() - lastPerformanceProbeAt < 400) return;
+    performanceProbeInFlight = true;
+    lastPerformanceProbeAt = Date.now();
+    try {
+      const scanStartedAt = performance.now();
+      const nodes = document.querySelectorAll(
+        '[data-sentry-component="EventPageTicketItem"], [role="dialog"], button, [role="button"]'
+      );
+      let visibleTextNodes = 0;
+      for (const node of [...nodes].slice(0, 300)) {
+        if (normalize(node.textContent)) visibleTextNodes += 1;
+      }
+      const domScanMs = performance.now() - scanStartedAt;
+      const frameStartedAt = await new Promise((resolve) => requestAnimationFrame(resolve));
+      const frameEndedAt = await new Promise((resolve) => requestAnimationFrame(resolve));
+      latestPerformanceSample = {
+        measuredAt: Date.now(),
+        frameGapMs: Math.round((frameEndedAt - frameStartedAt) * 10) / 10,
+        domScanMs: Math.round(domScanMs * 10) / 10,
+        inspectedNodes: nodes.length,
+        visibleTextNodes
+      };
+    } finally {
+      performanceProbeInFlight = false;
+    }
   }
 
   function applyControlConfiguration(command) {
@@ -332,15 +421,14 @@
     if (!allowControl.checked) return;
 
     if (command.type === "stop") {
+      activeControlCommand = null;
       await disarm();
       await controlReport(command, "stopped");
-      activeControlCommand = null;
       return;
     }
     if (command.type === "reset") {
       activeControlCommand = null;
-      preparedTicketCard = null;
-      preparedTicketName = "";
+      clearPreparedTicket();
       await resetEventLocks(false);
       await controlReport(command, "reset-complete");
       return;
@@ -376,11 +464,13 @@
       type: "autobot:control-poll",
       status: deviceControlStatus()
     });
+    if (result?.performanceProbe === true) void runLocalPerformanceProbe();
     const connected = Boolean(result?.connected);
     const nextClockOffset = Number(result?.clockOffsetMs);
     if (Number.isFinite(nextClockOffset)) controllerClockOffsetMs = nextClockOffset;
     const nextClockRoundTrip = Number(result?.clockRoundTripMs);
     if (Number.isFinite(nextClockRoundTrip)) controllerClockRoundTripMs = nextClockRoundTrip;
+    if (releaseQuietActive()) return;
     controlDot.classList.toggle("online", connected);
     controlStatus.textContent = connected
       ? result.approvalPending
@@ -396,6 +486,11 @@
 
   async function runControlLoop() {
     while (document.getElementById(ROOT_ID)) {
+      if (releaseQuietActive()) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      await flushDeferredActivity();
       await pollControlBridge().catch(() => {});
       await new Promise((resolve) => setTimeout(resolve, 750));
     }
@@ -705,6 +800,77 @@
     );
   }
 
+  function disconnectPreparedTicketObserver() {
+    preparedTicketObserver?.disconnect();
+    preparedTicketObserver = null;
+  }
+
+  function clearPreparedTicket() {
+    disconnectPreparedTicketObserver();
+    preparedTicketCard = null;
+    preparedTicketAddButton = null;
+    preparedTicketName = "";
+  }
+
+  function refreshPreparedTicketCapsule(root, ticketName) {
+    const candidates = [
+      ...(root?.matches?.('[data-sentry-component="EventPageTicketItem"]') ? [root] : []),
+      ...(root?.querySelectorAll?.('[data-sentry-component="EventPageTicketItem"]') || [])
+    ];
+    const card = candidates.find((candidate) => {
+      const heading = candidate.querySelector("h6");
+      return candidate.isConnected && sameText(heading?.textContent, ticketName);
+    });
+    if (!card) return false;
+    const buttons = [...card.querySelectorAll("button")].filter(
+      (button) => button.isConnected && !button.disabled && visible(button)
+    );
+    if (buttons.length !== 1) return false;
+    const renderedText = normalize(card.innerText);
+    if (!/\bFree\b|\bRSVP\b|\$0(?:\.00)?\b/i.test(renderedText)) return false;
+    preparedTicketCard = card;
+    preparedTicketAddButton = buttons[0];
+    preparedTicketName = ticketName;
+    return true;
+  }
+
+  function watchPreparedTicket(ticketName) {
+    disconnectPreparedTicketObserver();
+    const root = visibleTicketDialog() || preparedTicketCard?.parentElement;
+    if (!root || !refreshPreparedTicketCapsule(root, ticketName)) {
+      throw new Error("The prepared ticket controls could not be cached safely.");
+    }
+    preparedTicketObserver = new MutationObserver(() => {
+      refreshPreparedTicketCapsule(root, ticketName);
+    });
+    preparedTicketObserver.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled", "style", "class"]
+    });
+  }
+
+  function preparedCapsuleFor(config) {
+    if (
+      !preparedTicketCard?.isConnected ||
+      !preparedTicketAddButton?.isConnected ||
+      preparedTicketAddButton.disabled ||
+      !preparedTicketName ||
+      (config.excludedTicketNames || []).some((name) => sameText(name, preparedTicketName)) ||
+      !sameText(cardTicketName(preparedTicketCard), preparedTicketName) ||
+      !/\bFree\b|\bRSVP\b|\$0(?:\.00)?\b/i.test(normalize(preparedTicketCard.innerText))
+    ) {
+      return null;
+    }
+    return {
+      card: preparedTicketCard,
+      addButton: preparedTicketAddButton,
+      ticketName: preparedTicketName,
+      selectionMessage: "Used the cached preflight execution capsule."
+    };
+  }
+
   async function resolveTicketForStrategy(config, timeoutMs = 8_000) {
     let selectionMessage = "";
     const cards = await waitFor(
@@ -785,6 +951,7 @@
     }
     preparedTicketCard = resolved.card;
     preparedTicketName = resolved.ticketName;
+    watchPreparedTicket(resolved.ticketName);
     config.preparedTicketName = resolved.ticketName;
     config.completionLockCheckedFor = resolved.ticketName;
     config.preparedAt = synchronizedNow();
@@ -993,20 +1160,12 @@
       traceStep("release-started", { ticketStrategy: config.ticketStrategy });
       log("Local release clock started the authorized RSVP sequence.");
     }
-    await openTicketPicker();
-
-    const preparedCardIsUsable =
-      preparedTicketCard?.isConnected &&
-      preparedTicketName &&
-      !(config.excludedTicketNames || []).some((name) => sameText(name, preparedTicketName)) &&
-      availableFreeTicketCards(config.excludedTicketNames || []).includes(preparedTicketCard);
-    const resolved = preparedCardIsUsable
-      ? {
-          card: preparedTicketCard,
-          ticketName: preparedTicketName,
-          selectionMessage: "Used the preflight-prepared free RSVP."
-        }
-      : await resolveTicketForStrategy(config);
+    let resolved = preparedCapsuleFor(config);
+    if (!resolved) {
+      await openTicketPicker();
+      resolved = await resolveTicketForStrategy(config);
+      resolved.addButton = null;
+    }
     const card = resolved.card;
     const resolvedTicketName = resolved.ticketName;
     log(`${resolved.selectionMessage} Resolved ticket: ${resolvedTicketName}.`);
@@ -1036,8 +1195,9 @@
       return;
     }
 
+    const addButton = resolved.addButton || [...card.querySelectorAll("button")].filter(visible)[0];
     const addButtons = [...card.querySelectorAll("button")].filter(visible);
-    if (addButtons.length !== 1) {
+    if (!addButton || addButton.disabled || addButtons.length !== 1) {
       throw new Error(`Expected one add control in the ticket card, found ${addButtons.length}.`);
     }
 
@@ -1051,7 +1211,8 @@
     config.attemptedTicketNames = [...attemptedTicketNames, resolvedTicketName];
     void saveState(config).catch(() => {});
 
-    addButtons[0].click();
+    disconnectPreparedTicketObserver();
+    addButton.click();
     traceStep("ticket-add-clicked", { ticketName: resolvedTicketName });
     await waitFor(() => {
       const selectedCards = findTicketCard(resolvedTicketName);
@@ -1192,6 +1353,10 @@
   }
 
   async function saveState(state) {
+    if (releaseQuietActive()) {
+      deferredState = state;
+      return;
+    }
     await chrome.storage.local.set({ [STATE_KEY]: state });
   }
 
@@ -1217,6 +1382,7 @@
     if (config.controlCommandId && activeControlCommand?.id === config.controlCommandId) {
       const command = activeControlCommand;
       activeControlCommand = null;
+      await flushDeferredActivity();
       await controlReport(command, result === "confirmed" ? "confirmed" : result, {
         ticketName: config.ticketName,
         result
@@ -1239,9 +1405,15 @@
   }
 
   async function waitUntil(timestamp, label = "Armed") {
+    let quietModeShown = false;
     while (!stopped && synchronizedNow() < timestamp) {
       const remaining = timestamp - synchronizedNow();
-      armButton.textContent = `${label} · ${Math.max(0, Math.ceil(remaining / 1000))}s`;
+      if (remaining > RELEASE_QUIET_LEAD_MS) {
+        armButton.textContent = `${label} · ${Math.max(0, Math.ceil(remaining / 1000))}s`;
+      } else if (!quietModeShown) {
+        quietModeShown = true;
+        armButton.textContent = "Release mode";
+      }
       const delay = remaining > 2_000 ? 250 : remaining > 250 ? 25 : 5;
       await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
     }
@@ -1380,9 +1552,9 @@
   async function disarm() {
     stopped = true;
     clearInterval(countdownTimer);
-    preparedTicketCard = null;
-    preparedTicketName = "";
+    clearPreparedTicket();
     await clearState();
+    await flushDeferredActivity();
     armButton.disabled = false;
     armButton.textContent = "Run / Arm";
     log("Stopped and cleared.");
@@ -1405,8 +1577,7 @@
 
     stopped = true;
     clearInterval(countdownTimer);
-    preparedTicketCard = null;
-    preparedTicketName = "";
+    clearPreparedTicket();
     await clearState();
     if (matchingKeys.length) await chrome.storage.local.remove(matchingKeys);
     armButton.disabled = false;
@@ -1421,13 +1592,13 @@
   function fail(error) {
     const message = error instanceof Error ? error.message : String(error);
     stopped = true;
-    preparedTicketCard = null;
-    preparedTicketName = "";
+    clearPreparedTicket();
     traceStep("run-stopped", { message });
     log(`STOPPED: ${message}`);
     if (activeControlCommand) {
       const command = activeControlCommand;
       activeControlCommand = null;
+      void flushDeferredActivity();
       controlReport(command, "failed", { message }).catch(() => {});
     }
     armButton.disabled = false;
@@ -1448,18 +1619,37 @@
   resetLockButton.addEventListener("click", () => {
     resetEventLocks().catch(fail);
   });
+
+  function localPerformanceReport() {
+    const byStep = new Map(performanceTimeline.map((entry) => [entry.step, entry]));
+    const delta = (from, to) => {
+      const fromAt = Number(byStep.get(from)?.synchronizedAt);
+      const toAt = Number(byStep.get(to)?.synchronizedAt);
+      return Number.isFinite(fromAt) && Number.isFinite(toAt) ? toAt - fromAt : null;
+    };
+    return {
+      version: VERSION,
+      buildId: BUILD_ID,
+      eventPath: location.pathname,
+      generatedAt: new Date().toISOString(),
+      localOnly: true,
+      summary: {
+        releaseToTicketAddMs: delta("release-started", "ticket-add-clicked"),
+        ticketAddToCheckoutMs: delta("ticket-add-clicked", "checkout-clicked"),
+        checkoutToFinalRsvpMs: delta("checkout-clicked", "final-rsvp-clicked"),
+        finalRsvpToFinishMs: delta("final-rsvp-clicked", "run-finished"),
+        releaseToFinishMs: delta("release-started", "run-finished")
+      },
+      entries: performanceTimeline
+    };
+  }
+
   copyTimelineButton.addEventListener("click", async () => {
     try {
-      const stored = await chrome.storage.local.get(TIMELINE_KEY);
-      const timeline = stored[TIMELINE_KEY] || {
-        version: VERSION,
-        eventPath: location.pathname,
-        entries: performanceTimeline
-      };
-      await navigator.clipboard.writeText(JSON.stringify(timeline, null, 2));
-      log("Copied the local timing log. It was not sent to the Command Center.");
+      await navigator.clipboard.writeText(JSON.stringify(localPerformanceReport(), null, 2));
+      log("Copied the local performance report. It was not sent to the Command Center.");
     } catch {
-      log("The browser could not copy the timing log. Keep this tab active and try again.");
+      log("The browser could not copy the performance report. Keep this tab active and try again.");
     }
   });
 

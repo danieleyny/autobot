@@ -10,7 +10,7 @@ type ControllerCommand = {
   payload: Record<string, unknown>;
 };
 
-const VERSION = "0.13.1";
+const VERSION = "0.13.2";
 const BRIDGE_PROTOCOL_VERSION = "0.12.2";
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
 const IDLE_POLL_INTERVAL_MS = 15_000;

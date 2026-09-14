@@ -86,10 +86,12 @@ const emptyState: ControlState = {
   events: [],
   serverTime: Date.now(),
 };
+let pollingStateSnapshot = emptyState;
+let pollingClockOffsetMs = 0;
 
 const EVENT_PROFILE_KEY = "autobot:event-profile:v1";
 const CURRENT_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/latest";
-const PROFILE_HOST_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/tag/v0.13.1-beta";
+const PROFILE_HOST_RELEASE_URL = "https://github.com/danieleyny/autobot/releases/tag/v0.13.2-beta";
 
 function versionAtLeast(version: string, required: [number, number, number]) {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
@@ -214,6 +216,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const [releaseAt, setReleaseAt] = useState("");
   const [ticketStrategy, setTicketStrategy] = useState<"any" | "first" | "second">("any");
   const [firstSlotPercent, setFirstSlotPercent] = useState(50);
+  const [releaseLaneMs, setReleaseLaneMs] = useState<0 | 15>(0);
   const [organizerOwned, setOrganizerOwned] = useState(false);
   const [permissionConfirmed, setPermissionConfirmed] = useState(false);
   const [liveConfirmation, setLiveConfirmation] = useState("");
@@ -229,7 +232,10 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     }
     if (!response.ok) throw new Error("The controller state could not be loaded.");
     const next = (await response.json()) as ControlState;
-    setClockOffsetMs(Date.now() - next.serverTime);
+    const nextClockOffsetMs = Date.now() - next.serverTime;
+    pollingStateSnapshot = next;
+    pollingClockOffsetMs = nextClockOffsetMs;
+    setClockOffsetMs(nextClockOffsetMs);
     setState(next);
     setProfileDrafts((current) => {
       const merged = { ...current };
@@ -251,7 +257,16 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
   const refresh = useMemo(() => singleFlight(refreshState), [refreshState]);
 
   useEffect(() => {
-    return startDashboardPolling(async () => { await refresh(); }, document, window, (error) => {
+    return startDashboardPolling(async () => {
+      const quietRun = pollingStateSnapshot.runs.find((run) => run.mode === "live" && ["draft", "armed", "blocked"].includes(run.status));
+      const controllerNow = Date.now() - pollingClockOffsetMs;
+      if (
+        quietRun &&
+        controllerNow >= quietRun.releaseAt - 2_000 &&
+        controllerNow <= quietRun.releaseAt + 15_000
+      ) return;
+      await refresh();
+    }, document, window, (error) => {
       setNotice(error instanceof Error ? error.message : String(error));
       setLoading(false);
     });
@@ -265,12 +280,16 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
           eventTitle?: string;
           ticketStrategy?: "any" | "first" | "second";
           firstSlotPercent?: number;
+          releaseLaneMs?: 0 | 15;
         } | null;
         if (saved?.eventUrl) setEventUrl(saved.eventUrl);
         if (saved?.eventTitle) setEventTitle(saved.eventTitle);
         if (saved?.ticketStrategy) setTicketStrategy(saved.ticketStrategy);
         if (Number.isFinite(saved?.firstSlotPercent)) {
           setFirstSlotPercent(Math.min(100, Math.max(0, Number(saved?.firstSlotPercent))));
+        }
+        if (saved?.releaseLaneMs === 0 || saved?.releaseLaneMs === 15) {
+          setReleaseLaneMs(saved.releaseLaneMs);
         }
       } catch {
         // Ignore invalid device-local preferences.
@@ -408,13 +427,22 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
       const freeMemoryMb = Number(resources.freeMemoryMb || 0);
       const selectedWorkers = host.workers.filter((worker) => selectedIdSet.has(worker.id)).length;
       const constrained = selectedWorkers >= 4 && (totalMemoryMb < 12_000 || freeMemoryMb < 1_000);
+      const calibration = host.workers.find(
+        (worker) => worker.state.hostCalibration && typeof worker.state.hostCalibration === "object",
+      )?.state.hostCalibration as Record<string, unknown> | undefined;
+      const recommendedWorkers = Number(calibration?.recommendedWorkerCount);
+      const calibrationCurrent = Number.isFinite(Number(calibration?.measuredAt)) &&
+        state.serverTime - Number(calibration?.measuredAt) <= 4 * 60 * 60_000;
+      const aboveCalibratedLimit = calibrationCurrent && Number.isInteger(recommendedWorkers) && selectedWorkers > recommendedWorkers;
       checks.push({
         id: `host-${host.id}`,
         label: `${host.name} capacity`,
-        detail: constrained
+        detail: aboveCalibratedLimit
+          ? `${selectedWorkers} workers are selected, but the latest local calibration recommends ${recommendedWorkers}. Deselect ${selectedWorkers - recommendedWorkers} on this host.`
+          : constrained
           ? `${selectedWorkers} workers share ${Math.round(totalMemoryMb / 1024)} GB RAM with ${Math.round(freeMemoryMb / 1024)} GB free. Close other apps or use three workers.`
           : `${selectedWorkers} selected worker${selectedWorkers === 1 ? "" : "s"}; ${Math.round(freeMemoryMb / 1024)} GB RAM currently free.`,
-        status: constrained ? "warn" : "pass",
+        status: aboveCalibratedLimit ? "fail" : constrained ? "warn" : "pass",
       });
     }
     return checks;
@@ -562,7 +590,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     try {
       window.localStorage.setItem(
         EVENT_PROFILE_KEY,
-        JSON.stringify({ eventUrl, eventTitle, ticketStrategy, firstSlotPercent }),
+        JSON.stringify({ eventUrl, eventTitle, ticketStrategy, firstSlotPercent, releaseLaneMs }),
       );
       setNotice("Event details saved in this dashboard browser. Password and release time were not saved.");
     } catch {
@@ -684,11 +712,12 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
         confirmEventTitle: liveConfirmation,
         encryptedSecrets,
         ...(mode === "live" ? { firstSlotCount } : {}),
+        ...(mode === "live" ? { releaseLaneMs } : {}),
       });
       setNotice(
         mode === "inspection"
           ? `Rehearsal sent to ${selected.length} device${selected.length === 1 ? "" : "s"}. No RSVP controls will be clicked.`
-          : `Fleet preparation started: ${firstSlotCount} targeting slot 1 and ${secondSlotCount} targeting slot 2. Each laptop will open and hold its assigned ticket selector before the synchronized release.`,
+          : `Fleet preparation started: ${firstSlotCount} targeting slot 1 and ${secondSlotCount} targeting slot 2. ${releaseLaneMs ? "Experimental 15ms host lanes are enabled." : "All workers use the same release target."}`,
       );
       await refresh();
     } catch (error) {
@@ -860,7 +889,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
     setNotice("");
     try {
       await post({ action: "calibrate-profile-host", deviceId: representative.id });
-      setNotice(`${host.name} is measuring browser response gaps and available capacity for four seconds.`);
+      setNotice(`${host.name} is running a 20-second local load simulation. Keep every event window visible; the detailed report stays on that computer.`);
       await refresh();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -1036,7 +1065,7 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
 
       <div className="mx-auto max-w-[1500px] px-5 pt-5 lg:px-8">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#c9d4c4] bg-white px-4 py-3 text-sm text-[#4f5b51]">
-          <span>This is the isolated v0.13.1 beta dashboard. The working v0.12.2 system remains untouched.</span>
+          <span>This is the isolated v0.13.2 performance beta. The working v0.12.2 system remains untouched.</span>
           <a href="https://autobot-command-center.avgschnook.chatgpt.site" target="_blank" rel="noreferrer" className="rounded-full border border-[#cbd2c7] px-3 py-1.5 text-xs font-bold text-[#344132]">
             Open production fallback
           </a>
@@ -1422,6 +1451,22 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                   </div>
                 )}
                 {mode === "live" && (
+                  <label className="field sm:col-span-2 rounded-xl border border-[#ead0a9] bg-[#fff9ef] p-4">
+                    <span>Experimental same-host release lanes</span>
+                    <select
+                      disabled={configurationLocked}
+                      value={releaseLaneMs}
+                      onChange={(event) => setReleaseLaneMs(Number(event.target.value) as 0 | 15)}
+                    >
+                      <option value={0}>Off — exact same release time (recommended)</option>
+                      <option value={15}>15ms lanes — benchmark experiments only</option>
+                    </select>
+                    <small className="font-normal leading-5 text-[#79501f]">
+                      When enabled, profiles sharing one computer release at 0/15/30/45ms. Leave this off unless repeated mock-event comparisons show a benefit on that host.
+                    </small>
+                  </label>
+                )}
+                {mode === "live" && (
                   <>
                     <label className="field sm:col-span-2">
                       <span>Type the exact event title to confirm</span>
@@ -1700,11 +1745,12 @@ export function CommandCenter({ operatorName }: { operatorName: string }) {
                           </p>
                           {calibration ? (
                             <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${calibration.stable === true ? "bg-[#eaf4d9] text-[#35511e]" : "bg-[#fff0d9] text-[#79501f]"}`}>
-                              <p className="font-semibold">Calibration recommends up to {String(calibration.recommendedWorkerCount ?? "—")} worker{Number(calibration.recommendedWorkerCount) === 1 ? "" : "s"}</p>
+                              <p className="font-semibold">Automatic limit: up to {String(calibration.recommendedWorkerCount ?? "—")} worker{Number(calibration.recommendedWorkerCount) === 1 ? "" : "s"}</p>
                               <p className="mt-1 leading-5">{String(calibration.summary || "Capacity check complete.")}</p>
                               <p className="mt-1 font-mono text-[10px] opacity-80">
-                                {calibration.averageExtensionGapMs ? `avg ${String(calibration.averageExtensionGapMs)}ms · ` : ""}
-                                {calibration.maxExtensionGapMs ? `max ${String(calibration.maxExtensionGapMs)}ms · ` : ""}
+                                {calibration.p95HostEventLoopLagMs !== null ? `host p95 ${String(calibration.p95HostEventLoopLagMs)}ms · ` : ""}
+                                {calibration.p95FrameGapMs !== null ? `frame p95 ${String(calibration.p95FrameGapMs)}ms · ` : ""}
+                                {calibration.p95DomScanMs !== null ? `DOM p95 ${String(calibration.p95DomScanMs)}ms · ` : ""}
                                 {calibration.measuredAt ? new Date(Number(calibration.measuredAt)).toLocaleTimeString() : ""}
                               </p>
                             </div>

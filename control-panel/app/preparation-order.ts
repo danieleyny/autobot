@@ -58,3 +58,32 @@ export function hostAwarePreparationOrder(
   }
   return ordered;
 }
+
+/**
+ * Return an optional, explicit release lane for workers sharing one computer.
+ * Classic one-device hosts always remain at the base release time. A zero lane
+ * keeps every worker synchronized and is the production default.
+ */
+export function hostReleaseOffsets(
+  selectedIds: string[],
+  devices: PreparationDevice[],
+  laneMs: 0 | 15,
+): Map<string, number> {
+  const offsets = new Map(selectedIds.map((id) => [id, 0]));
+  if (laneMs === 0) return offsets;
+  const byId = new Map(devices.map((device) => [device.id, device]));
+  const groups = new Map<string, PreparationDevice[]>();
+  for (const id of selectedIds) {
+    const device = byId.get(id);
+    if (!device || device.state.profileMode !== "multi") continue;
+    const key = hostKey(device);
+    const group = groups.get(key) ?? [];
+    group.push(device);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    group.sort((left, right) => Number(left.state.workerIndex || 0) - Number(right.state.workerIndex || 0));
+    group.forEach((device, index) => offsets.set(device.id, index * laneMs));
+  }
+  return offsets;
+}
